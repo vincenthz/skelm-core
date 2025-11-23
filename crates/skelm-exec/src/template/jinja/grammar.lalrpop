@@ -1,0 +1,163 @@
+use super::parser::Statement;
+use super::ast::{Expression, Operator, ArraySubexpr};
+use super::lexer::StatementToken as Token;
+use super::lexer::StatementToken;
+
+grammar;
+
+extern {
+    enum Token {
+        identifier => StatementToken::Ident(<String>),
+        string => StatementToken::String(<String>),
+        sstring => StatementToken::SString(<String>),
+        number => StatementToken::Number(<String>),
+        "(" => StatementToken::ParenOpen,
+        "[" => StatementToken::BrackOpen,
+        ")" => StatementToken::ParenClose,
+        "]" => StatementToken::BrackClose,
+        "|" => StatementToken::Pipe,
+        "+" => StatementToken::Plus,
+        "-" => StatementToken::Minus,
+        "<" => StatementToken::Less,
+        "<=" => StatementToken::LessEqual,
+        ">" => StatementToken::Greater,
+        ">=" => StatementToken::GreaterEqual,
+        "==" => StatementToken::Equal,
+        "!=" => StatementToken::NotEqual,
+        "." => StatementToken::Dot,
+        "," => StatementToken::Comma,
+        "=" => StatementToken::Assign,
+        "::" => StatementToken::DDColon,
+        "true" => StatementToken::True,
+        "false" => StatementToken::False,
+        "elif" => StatementToken::Elif,
+        "if" => StatementToken::If,
+        "else" => StatementToken::Else,
+        "for" => StatementToken::For,
+        "in" => StatementToken::In,
+        "set" => StatementToken::Set,
+        "endfor" => StatementToken::EndFor,
+        "endif" => StatementToken::EndIf,
+        "and" => StatementToken::And,
+        "or" => StatementToken::Or,
+        "not" => StatementToken::Not,
+        "is" => StatementToken::Is,
+    }
+}
+
+
+pub Statement: Statement = {
+    "if" <condition:Expression> => Statement::If { condition },
+    "for" <bind:Bind> "in" <expression:Expression> => Statement::For { bind, iter: expression },
+    "endif" => Statement::EndIf,
+    "endfor" => Statement::EndFor,
+    "elif" <condition:Expression> => Statement::Elif { condition },
+    "else" => Statement::Else,
+    "set" <expr:Expression> "=" <value:Expression> => Statement::Set { expr, value },
+}
+
+Bind: String = {
+    <identifier>,
+}
+
+Expression: Expression = {
+    #[precedence(level="1")]
+    <e:Term> => e,
+    #[precedence(level="2")] #[assoc(side="right")]
+    "not" <t:Term> => Expression::LogicalNot(Box::new(t)),
+
+    #[precedence(level="4")] #[assoc(side="left")]
+    <lhs:Expression> "is" <rhs:Expression> => {
+        Expression::BinaryOperation { lhs: Box::new(lhs), op: Operator::Is, rhs: Box::new(rhs) }
+    },
+    #[precedence(level="6")] #[assoc(side="left")]
+    <lhs:Expression> "+" <rhs:Expression> => {
+        Expression::BinaryOperation { lhs: Box::new(lhs), op: Operator::Add, rhs: Box::new(rhs) }
+    },
+    #[precedence(level="6")] #[assoc(side="left")]
+    <lhs:Expression> "-" <rhs:Expression> => {
+        Expression::BinaryOperation { lhs: Box::new(lhs), op: Operator::Sub, rhs: Box::new(rhs) }
+    },
+    #[precedence(level="7")] #[assoc(side="left")]
+    <lhs:Expression> "in" <rhs:Expression> => {
+        Expression::BinaryOperation { lhs: Box::new(lhs), op: Operator::In, rhs: Box::new(rhs) }
+    },
+    #[precedence(level="7")] #[assoc(side="left")]
+    <lhs:Expression> "<" <rhs:Expression> => {
+        Expression::BinaryOperation { lhs: Box::new(lhs), op: Operator::LesserThan, rhs: Box::new(rhs) }
+    },
+    #[precedence(level="7")] #[assoc(side="left")]
+    <lhs:Expression> "<=" <rhs:Expression> => {
+        Expression::BinaryOperation { lhs: Box::new(lhs), op: Operator::LesserEqual, rhs: Box::new(rhs) }
+    },
+    #[precedence(level="7")] #[assoc(side="left")]
+    <lhs:Expression> ">" <rhs:Expression> => {
+        Expression::BinaryOperation { lhs: Box::new(lhs), op: Operator::GreaterThan, rhs: Box::new(rhs) }
+    },
+    #[precedence(level="7")] #[assoc(side="left")]
+    <lhs:Expression> ">=" <rhs:Expression> => {
+        Expression::BinaryOperation { lhs: Box::new(lhs), op: Operator::GreaterEqual, rhs: Box::new(rhs) }
+    },
+    #[precedence(level="8")] #[assoc(side="left")]
+    <lhs:Expression> "==" <rhs:Expression> => {
+        Expression::BinaryOperation { lhs: Box::new(lhs), op: Operator::Equal, rhs: Box::new(rhs) }
+    },
+    #[precedence(level="8")] #[assoc(side="left")]
+    <lhs:Expression> "!=" <rhs:Expression> => {
+        Expression::BinaryOperation { lhs: Box::new(lhs), op: Operator::NotEqual, rhs: Box::new(rhs) }
+    },
+    #[precedence(level="8")] #[assoc(side="left")]
+    <lhs:Expression> "|" <rhs:Expression> => {
+        Expression::Filter(Box::new(lhs), Box::new(rhs))
+    },
+    #[precedence(level="9")] #[assoc(side="left")]
+    <lhs:Expression> "and" <rhs:Expression> => {
+        Expression::LogicalAnd(Box::new(lhs), Box::new(rhs))
+    },
+    #[precedence(level="10")] #[assoc(side="left")]
+    <lhs:Expression> "or" <rhs:Expression> => {
+        Expression::LogicalOr(Box::new(lhs), Box::new(rhs))
+    },
+}
+
+Term: Expression = {
+    <Literal>,
+    <ident:identifier> => Expression::Identifier(ident),
+    "(" <Expression> ")",
+    <lhs:Term> "." <ident:identifier> => Expression::MemberAccess(Box::new(lhs), ident),
+    <lhs:Term> "[" <sub:ArraySubexpr> "]" => Expression::ArraySubscript(Box::new(lhs), sub),
+    <lhs:Term> "(" <params:Comma<Param>> ")" => Expression::Call(Box::new(lhs), params),
+}
+
+ArraySubexpr: ArraySubexpr = {
+    <nstart:number?> "::" <nend:number?> => ArraySubexpr::Range(nstart, nend),
+    <expr:Expression> => ArraySubexpr::Value(Box::new(expr)),
+}
+
+Comma<T>: Vec<T> = { // (1)
+    <mut v:(<T> ",")*> <e:T?> => match e { // (2)
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+};
+
+Param: (String, Expression) = {
+    <ident:identifier> "=" <e:Expression> => (ident, e),
+    <e:Expression> => (String::new(), e),
+}
+
+Literal: Expression = {
+    <s:string> => Expression::String(s),
+    <s:sstring> => Expression::String(s),
+    <n:number> => Expression::Number(n),
+    "-" <n:number> => Expression::Number(n),
+    <b:Boolean> => Expression::Boolean(b),
+}
+
+Boolean: bool = {
+    "true" => true,
+    "false" => false,
+}

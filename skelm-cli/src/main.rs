@@ -89,7 +89,19 @@ async fn cmd_info(name: String) -> anyhow::Result<()> {
     let model = skelm_exec::Model::load(&model_descr)?;
 
     if let Some(chat_template) = model.model.chat_template() {
-        println!("chat-template:\n{}", chat_template)
+        use skelm_exec::template::jinja;
+
+        println!("chat-template:\n{}", chat_template);
+        let r = jinja::block(&chat_template);
+        println!("content: {}", r.first);
+        for (block, after) in r.found {
+            println!("block: {:?}", block);
+            if block.block_type == jinja::BlockType::Statement {
+                let st = jinja::parse_statement(block.content).unwrap();
+                println!("  {:?}", st)
+            }
+            println!("content: {:?}", after);
+        }
     }
 
     Ok(())

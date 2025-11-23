@@ -1,4 +1,5 @@
-mod template;
+mod output;
+pub mod template;
 
 use std::hash::Hash;
 use std::path::PathBuf;
@@ -7,7 +8,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use thiserror::Error;
 
-use skelm_llama_cpp as llama;
+use skelm_llama_cpp::{self as llama, Vocab};
 use skelm_ollama as ollama;
 
 pub use template::chat_template;
@@ -57,6 +58,26 @@ impl Model {
                 model: m,
                 config: Arc::new(config),
             })
+    }
+
+    pub fn load_vocab(descr: &ModelDescr) -> Result<Vocab, ModelLoadError> {
+        let (config, model_path) = match descr {
+            ModelDescr::Ollama(model_descr) => {
+                let config = ollama::model_config_get(model_descr)?;
+                let model_path = config.model_path.clone();
+                (ModelConfig::Ollama(config), model_path)
+            }
+            ModelDescr::Path(path_buf) => (ModelConfig::Implicit, path_buf.clone()),
+        };
+        let params = llama::ModelParams { vocab_only: true };
+        let model = llama::Model::load(model_path, &params)
+            .map_err(ModelLoadError::LlamaModelFailedLoading)
+            .map(|m| Model {
+                vocab: m.vocab(),
+                model: m,
+                config: Arc::new(config),
+            })?;
+        Ok(model.vocab)
     }
 
     pub fn new_context(&self) -> Context {

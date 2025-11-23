@@ -1,3 +1,5 @@
+pub mod jinja;
+
 use minijinja::context;
 
 fn raise_exception(err_text: String) -> Result<String, minijinja::Error> {
