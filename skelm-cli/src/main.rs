@@ -92,16 +92,26 @@ async fn cmd_info(name: String) -> anyhow::Result<()> {
         use skelm_exec::template::jinja;
 
         println!("chat-template:\n{}", chat_template);
-        let r = jinja::block(&chat_template);
-        println!("content: {}", r.first);
-        for (block, after) in r.found {
-            println!("block: {:?}", block);
+        let blocks = jinja::block(&chat_template)?;
+        let blocks = jinja::parse(&blocks).map_err(|e| anyhow::anyhow!("{}", e))?;
+        for block in blocks {
+            println!(
+                "{:?}-{:?} => {:?}",
+                block.start_pos, block.end_pos, block.content
+            );
+        }
+        /*
+        for block in blocks {
+            //println!("block: {:?}", block);
             if block.block_type == jinja::BlockType::Statement {
-                let st = jinja::parse_statement(block.content).unwrap();
+                let st = jinja::parse_statement(block.start_pos, block.content).unwrap();
+                println!("  {:?}", st)
+            } else if block.block_type == jinja::BlockType::Expression {
+                let st = jinja::parse_expression(block.start_pos, block.content).unwrap();
                 println!("  {:?}", st)
             }
-            println!("content: {:?}", after);
         }
+        */
     }
 
     Ok(())

@@ -1,8 +1,10 @@
 use logos::Logos;
 
+pub type LexerError = String;
+
 #[derive(Logos, Debug, PartialEq, Eq, Hash, Clone)]
 #[logos(skip r"[ \t\n]+")]
-#[logos(error = String)]
+#[logos(error = LexerError)]
 pub enum StatementToken {
     #[token("(")]
     ParenOpen,

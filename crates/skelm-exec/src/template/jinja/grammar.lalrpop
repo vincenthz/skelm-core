@@ -2,10 +2,13 @@ use super::parser::Statement;
 use super::ast::{Expression, Operator, ArraySubexpr};
 use super::lexer::StatementToken as Token;
 use super::lexer::StatementToken;
+use super::position::Position;
 
 grammar;
 
 extern {
+    type Error = u32;
+    type Location = Position;
     enum Token {
         identifier => StatementToken::Ident(<String>),
         string => StatementToken::String(<String>),
@@ -60,7 +63,7 @@ Bind: String = {
     <identifier>,
 }
 
-Expression: Expression = {
+pub Expression: Expression = {
     #[precedence(level="1")]
     <e:Term> => e,
     #[precedence(level="2")] #[assoc(side="right")]
@@ -107,9 +110,8 @@ Expression: Expression = {
         Expression::BinaryOperation { lhs: Box::new(lhs), op: Operator::NotEqual, rhs: Box::new(rhs) }
     },
     #[precedence(level="8")] #[assoc(side="left")]
-    <lhs:Expression> "|" <rhs:Expression> => {
-        Expression::Filter(Box::new(lhs), Box::new(rhs))
-    },
+    <lhs:Expression> "|" <rhs:Expression> =>
+        Expression::Filter(Box::new(lhs), Box::new(rhs)),
     #[precedence(level="9")] #[assoc(side="left")]
     <lhs:Expression> "and" <rhs:Expression> => {
         Expression::LogicalAnd(Box::new(lhs), Box::new(rhs))

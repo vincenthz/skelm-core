@@ -1,9 +1,17 @@
+use super::block::Block;
+use super::parser::{ParseToken, Statement};
+
 #[derive(Debug)]
 pub enum StatementAst {
     If {
         condition: Expression,
         then: (),
         else_: Option<()>,
+    },
+    For {
+        binder: Binder,
+        iterator: Expression,
+        body: Vec<StatementAst>,
     },
 }
 
@@ -20,6 +28,9 @@ pub enum Operator {
     LesserThan,
     LesserEqual,
 }
+
+// TODO support multi binds
+pub type Binder = String;
 
 #[derive(Debug)]
 pub enum Expression {
@@ -45,4 +56,8 @@ pub enum Expression {
 pub enum ArraySubexpr {
     Value(Box<Expression>),
     Range(Option<String>, Option<String>),
+}
+
+pub fn ast<'a>(blocks: &[Block<ParseToken<'a>>]) -> Vec<StatementAst> {
+    todo!()
 }
