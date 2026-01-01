@@ -12,6 +12,8 @@ pub enum StatementAst {
         iterator: Expression,
         body: StatementBlock,
     },
+    Expression(Expression),
+    Statement(Statement),
 }
 
 pub type StatementBlock = Vec<StatementAst>;

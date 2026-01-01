@@ -9,3 +9,6 @@ mod render;
 pub use ast::Expression;
 pub use block::{BlockType, StripStyle, block};
 pub use parser::{Statement, parse, parse_expression, parse_statement};
+
+#[cfg(test)]
+mod tests;

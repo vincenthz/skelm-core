@@ -163,7 +163,7 @@ pub fn block<'a>(jinja_template: &'a str) -> Result<Vec<Block<&'a str>>, Error> 
 
         // if we find a next opening, we re-iterate the loop, otherwise we just finish the block'ification
         if let Some(mat_open_next) = ac_opens.find(current) {
-            let next_block_content = &current[0..mat_open.start()];
+            let next_block_content = &current[0..mat_open_next.start()];
             if !next_block_content.is_empty() {
                 blocks.push(Block::text(position, next_block_content));
                 position.update_by(next_block_content);
