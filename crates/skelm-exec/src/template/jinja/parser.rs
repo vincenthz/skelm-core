@@ -53,14 +53,14 @@ pub fn parse<'a>(blocks: &[Block<&'a str>]) -> Result<Vec<Block<ParseToken<'a>>>
         .map(|block| match block.block_type {
             BlockType::Statement => {
                 let st = parse_statement(block.start_pos, block.content)?;
-                Ok(block.map(ParseToken::Statement(st)))
+                Ok(block.replace_content(ParseToken::Statement(st)))
             }
             BlockType::Expression => {
                 let expr = parse_expression(block.start_pos, block.content)?;
-                Ok(block.map(ParseToken::Expression(expr)))
+                Ok(block.replace_content(ParseToken::Expression(expr)))
             }
-            BlockType::Comment => Ok(block.map(ParseToken::Comment(block.content))),
-            BlockType::Text => Ok(block.map(ParseToken::Text(block.content))),
+            BlockType::Comment => Ok(block.replace_content(ParseToken::Comment(block.content))),
+            BlockType::Text => Ok(block.replace_content(ParseToken::Text(block.content))),
         })
         .collect::<Result<Vec<_>, _>>()
     /*

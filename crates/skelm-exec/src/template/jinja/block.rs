@@ -46,7 +46,7 @@ impl<'a> Block<&'a str> {
 }
 
 impl<T> Block<T> {
-    pub fn map<U>(&self, content: U) -> Block<U> {
+    pub fn replace_content<U>(&self, content: U) -> Block<U> {
         Block {
             block_type: self.block_type,
             start_pos: self.start_pos,
@@ -55,6 +55,13 @@ impl<T> Block<T> {
             right_strip_style: self.right_strip_style,
             content,
         }
+    }
+
+    pub fn map<F, U>(&self, f: F) -> Block<U>
+    where
+        F: FnOnce(&T) -> U,
+    {
+        self.replace_content(f(&self.content))
     }
 }
 
