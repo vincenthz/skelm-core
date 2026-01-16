@@ -18,6 +18,7 @@ members = [
     "crates/skelm-hf",
     "crates/skelm-exec",
     "crates/skelm-ollama",
+    "crates/template-jinja",
     "skelm-cli",
 ]
 
@@ -29,6 +30,7 @@ skelm-exec = { version = "0.1", path = "crates/skelm-exec" }
 skelm-llama-cpp-sys = { version = "0.1", path = "crates/skelm-llama-cpp-sys" }
 skelm-llama-cpp = { version = "0.1", path = "crates/skelm-llama-cpp" }
 skelm-ollama = { version = "0.1", path = "crates/skelm-ollama" }
+template-jinja = { version = "0.1", path = "crates/template-jinja" }
 
 #mlx-lm = { version = "0.0.1" }
 #mlx-lm-utils = { version = "0.0.1" }

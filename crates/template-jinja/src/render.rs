@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use crate::template::jinja::StripStyle;
+use super::StripStyle;
 
 use super::{
     Expression,

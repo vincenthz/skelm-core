@@ -1,4 +1,6 @@
-pub mod jinja;
+pub mod jinja {
+    pub use template_jinja::*;
+}
 
 use minijinja::context;
 

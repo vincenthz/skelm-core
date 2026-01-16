@@ -13,6 +13,7 @@ description = "Skelm abstraction for running language model in various mode"
 [dependencies]
 skelm-ollama.workspace = true
 skelm-llama-cpp.workspace = true
+template-jinja.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 chrono = "*"

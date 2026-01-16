@@ -1,0 +1,22 @@
+[package]
+name = "template-jinja"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+anyhow.workspace = true
+chrono = "*"
+ctrlc = "3.5"
+logos = "0.15"
+lalrpop-util = "0.22"
+aho-corasick = "1"
+
+[build-dependencies]
+lalrpop = "0.22"
