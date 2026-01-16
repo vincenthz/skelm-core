@@ -5,11 +5,13 @@ use super::parser::{ParseToken, Statement};
 pub enum StatementAst<'a> {
     If {
         conditions: Vec<(Block<&'a Expression>, Vec<StatementAst<'a>>)>,
-        else_: Option<()>,
+        else_: Option<(Block<()>, Vec<StatementAst<'a>>)>,
+        end: Option<Block<()>>,
     },
     For {
-        binder: Block<(Binder, &'a Expression)>,
+        binder: Block<(&'a Binder, &'a Expression)>,
         body: Vec<StatementAst<'a>>,
+        end: Option<Block<()>>,
     },
     Block(Vec<StatementAst<'a>>),
     Expression(Block<&'a Expression>),
@@ -20,14 +22,30 @@ pub enum StatementAst<'a> {
 impl<'a> StatementAst<'a> {
     pub fn content_push(&mut self, element: StatementAst<'a>) {
         match self {
-            StatementAst::If { conditions, else_ } => match else_ {
-                Some(_) => todo!(),
-                None => {
-                    let (_, last_block) = conditions.last_mut().unwrap();
-                    last_block.push(element)
+            StatementAst::If {
+                conditions,
+                else_,
+                end,
+            } => {
+                if end.is_some() {
+                    panic!("trying to push into a finished if")
                 }
-            },
-            StatementAst::For { binder: _, body } => {
+                match else_ {
+                    Some((_, statements)) => statements.push(element),
+                    None => {
+                        let (_, last_block) = conditions.last_mut().unwrap();
+                        last_block.push(element)
+                    }
+                }
+            }
+            StatementAst::For {
+                binder: _,
+                body,
+                end,
+            } => {
+                if end.is_some() {
+                    panic!("trying to push into a finished for");
+                }
                 todo!()
             }
             StatementAst::Block(statement_asts) => statement_asts.push(element),
@@ -84,36 +102,6 @@ pub enum ArraySubexpr {
     Range(Option<String>, Option<String>),
 }
 
-//pub struct Stack1<T>(T, Vec<T>);
-
-/*
-pub enum AstBuilder<'a> {
-    If {
-        conditions: Vec<(&'a Expression, StatementBlock<'a>)>,
-    },
-    IfElse {
-        conditions: Vec<(&'a Expression, StatementBlock<'a>)>,
-        else_: StatementBlock<'a>,
-    },
-    For {
-        binder: &'a Binder,
-        body: StatementBlock<'a>,
-    },
-    Leaf(),
-}
-
-impl<'a> AstBuilder<'a> {
-    pub fn append_expr(&mut self, expression: &'a Expression) {
-        match self {
-            AstBuilder::IfElse { conditions, else_ } => todo!(),
-            AstBuilder::For { binder, body } => todo!(),
-            AstBuilder::If { conditions } => todo!(),
-            AstBuilder::Leaf() => todo!(),
-        }
-    }
-}
-*/
-
 pub fn ast<'a>(blocks: &'a [Block<ParseToken<'a>>]) -> Vec<StatementAst<'a>> {
     let mut stack: Vec<StatementAst<'a>> = Vec::new();
 
@@ -128,16 +116,65 @@ pub fn ast<'a>(blocks: &'a [Block<ParseToken<'a>>]) -> Vec<StatementAst<'a>> {
                     let new_leaf = StatementAst::If {
                         conditions: vec![(cond, vec![])],
                         else_: None,
+                        end: None,
                     };
                     stack.push(new_leaf);
                 }
-                Statement::Elif { condition } => todo!(),
-                Statement::For { bind, iter } => todo!(),
-                Statement::Set { expr, value } => todo!(),
+                Statement::Elif { condition } => {
+                    let cond = block.replace_content(condition);
+                    match stack.last_mut().unwrap() {
+                        StatementAst::If {
+                            conditions,
+                            else_,
+                            end,
+                        } => {
+                            if end.is_some() {
+                                panic!("double bad");
+                            }
+                            if else_.is_some() {
+                                panic!("bad");
+                            }
+                            conditions.push((cond, vec![]))
+                        }
+                        _ => {
+                            // invalid
+                            todo!()
+                        }
+                    }
+                }
+                Statement::Else => {
+                    match stack.last_mut().unwrap() {
+                        StatementAst::If {
+                            conditions: _,
+                            else_,
+                            end,
+                        } => {
+                            let else_block = block.replace_content(());
+                            if end.is_some() {
+                                panic!("double bad");
+                            }
+                            if else_.is_some() {
+                                panic!("bad");
+                            }
+
+                            *else_ = Some((else_block, vec![]));
+                        }
+                        _ => {
+                            // invalid
+                            todo!()
+                        }
+                    }
+                }
                 Statement::EndIf => {
-                    let ast_if = stack.pop().unwrap();
-                    match ast_if {
-                        StatementAst::If { conditions, else_ } => (),
+                    let mut ast_if = stack.pop().unwrap();
+                    match &mut ast_if {
+                        StatementAst::If {
+                            conditions: _,
+                            else_: _,
+                            end,
+                        } => {
+                            *end = Some(block.replace_content(()));
+                        }
                         _ => {
                             // invalid
                             todo!()
@@ -145,8 +182,29 @@ pub fn ast<'a>(blocks: &'a [Block<ParseToken<'a>>]) -> Vec<StatementAst<'a>> {
                     };
                     stack.last_mut().unwrap().content_push(ast_if);
                 }
-                Statement::Else => todo!(),
-                Statement::EndFor => todo!(),
+                Statement::Set { expr, value } => todo!(),
+                Statement::For { bind, iter } => {
+                    let binder = block.replace_content((bind, iter));
+                    let new_leaf = StatementAst::For {
+                        binder,
+                        body: vec![],
+                        end: None,
+                    };
+                    stack.push(new_leaf);
+                }
+                Statement::EndFor => {
+                    let mut stmt = stack.pop().unwrap();
+                    let StatementAst::For {
+                        binder: _,
+                        body: _,
+                        end,
+                    } = &mut stmt
+                    else {
+                        panic!("unexpected")
+                    };
+                    *end = Some(block.replace_content(()));
+                    stack.last_mut().unwrap().content_push(stmt);
+                }
             },
             ParseToken::Expression(expression) => {
                 stack
