@@ -1,0 +1,27 @@
+#!/bin/sh
+
+SOURCES="hello"
+TESTS_DIR=../tests-files/
+
+
+
+for name in $SOURCES
+do
+	SOURCE="${name}.j2"
+	if [ ! -f "${TESTS_DIR}/$SOURCE" ]; then
+		echo "source {$name} doesn't exist"
+		exit 1
+	fi
+
+	for i in `seq 1 100`; do
+		JSON="${name}_${i}.json"
+		OUTPUT="${name}_${i}.output"
+		if [ -f "${TESTS_DIR}/${JSON}" ]; then
+			echo "$name $SOURCE $JSON"
+			python3 generate_golden.py "${TESTS_DIR}/${SOURCE}" "${TESTS_DIR}/${JSON}" "${TESTS_DIR}/${OUTPUT}"
+		else
+			break
+		fi
+	done
+done
+

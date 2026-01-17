@@ -14,7 +14,8 @@ pub enum Value {
     String(String),
     Int(u64),
     Bool(bool),
-    Field(Values),
+    Array(Vec<Value>),
+    Struct(Values),
 }
 
 pub type Values = HashMap<String, Value>;
@@ -69,65 +70,69 @@ impl<'a, 'b> Render<'a, 'b> {
     pub fn push_str(&mut self, left: StripStyle, right: StripStyle, s: &str) {
         self.output.push_str(s)
     }
+
+    pub fn eval_statements(&mut self, statements: &[StatementAst]) {
+        for stmt in statements {
+            match stmt {
+                StatementAst::If {
+                    conditions,
+                    else_,
+                    end,
+                } => {
+                    let mut do_else = true;
+                    for (cond, cond_body) in conditions {
+                        if eval_condition(&self, cond) {
+                            do_else = false;
+                            break;
+                        }
+                    }
+
+                    if do_else {
+                        if let Some(else_) = else_ {
+                            //
+                        }
+                    }
+                }
+                StatementAst::For { binder, body, end } => {}
+                StatementAst::Block(statement_asts) => {
+                    self.eval_statements(&statement_asts);
+                }
+                StatementAst::Expression(block) => {
+                    //
+                    let val = eval_expression(&self, block.content);
+                    if let Some(val) = val {
+                        match val {
+                            Value::String(s) => {
+                                self.push_str(block.left_strip_style, block.right_strip_style, &s)
+                            }
+                            Value::Int(i) => self.push_str(
+                                block.left_strip_style,
+                                block.right_strip_style,
+                                &i.to_string(),
+                            ),
+                            Value::Struct(_hash_map) => self.push_str(
+                                block.left_strip_style,
+                                block.right_strip_style,
+                                &format!("[hashmap]"),
+                            ),
+                            Value::Bool(b) => self.push_str(
+                                block.left_strip_style,
+                                block.right_strip_style,
+                                &format!("{}", b),
+                            ),
+                        }
+                    }
+                }
+                StatementAst::Comment(_block) => {}
+                StatementAst::Text(t) => self.output.push_str(t),
+            }
+        }
+    }
 }
 
 pub fn render(template: &[StatementAst], values: &Values) -> String {
     let mut render = Render::new(template, values);
-
-    for stmt in template {
-        match stmt {
-            StatementAst::If {
-                conditions,
-                else_,
-                end,
-            } => {
-                let mut do_else = true;
-                for (cond, cond_body) in conditions {
-                    if eval_condition(&render, cond) {
-                        do_else = false;
-                        break;
-                    }
-                }
-
-                if do_else {
-                    if let Some(else_) = else_ {
-                        //
-                    }
-                }
-            }
-            StatementAst::For { binder, body, end } => {}
-            StatementAst::Block(statement_asts) => {}
-            StatementAst::Expression(block) => {
-                //
-                let val = eval_expression(&render, block.content);
-                if let Some(val) = val {
-                    match val {
-                        Value::String(s) => {
-                            render.push_str(block.left_strip_style, block.right_strip_style, &s)
-                        }
-                        Value::Int(i) => render.push_str(
-                            block.left_strip_style,
-                            block.right_strip_style,
-                            &i.to_string(),
-                        ),
-                        Value::Field(_hash_map) => render.push_str(
-                            block.left_strip_style,
-                            block.right_strip_style,
-                            &format!("[hashmap]"),
-                        ),
-                        Value::Bool(b) => render.push_str(
-                            block.left_strip_style,
-                            block.right_strip_style,
-                            &format!("{}", b),
-                        ),
-                    }
-                }
-            }
-            StatementAst::Comment(_block) => {}
-            StatementAst::Text(t) => render.output.push_str(t),
-        }
-    }
-    //let mut local = HashMap::new();
+    render.eval_statements(template);
     render.output
 }
 
@@ -146,7 +151,27 @@ fn eval_expression(render: &Render, expression: &Expression) -> Option<Value> {
             value.map(Value::Int)
         }
         Expression::Boolean(b) => Some(Value::Bool(*b)),
-        Expression::ArraySubscript(expression, array_subexpr) => todo!(),
+        Expression::ArraySubscript(expression, array_subexpr) => {
+            let val = eval_expression(render, expression);
+            match val {
+                Some(val) => {
+                    match val {
+                        Value::String(_) => None,
+                        Value::Int(_) => None,
+                        Value::Bool(_) => None,
+                        Value::Array(values) => {
+                            // TODO
+                            None
+                        }
+                        Value::Struct(hash_map) => {
+                            // TODO
+                            None
+                        }
+                    }
+                }
+                None => None,
+            }
+        }
         Expression::MemberAccess(expression, _) => todo!(),
         Expression::Call(expression, items) => todo!(),
         Expression::Filter(expression, expression1) => todo!(),
@@ -194,9 +219,19 @@ fn eval_expression(render: &Render, expression: &Expression) -> Option<Value> {
 }
 
 fn value_as_bool(value: &Option<Value>) -> bool {
-    false
+    match value {
+        None => false,
+        Some(val) => match val {
+            Value::String(s) => !s.is_empty(),
+            Value::Int(i) => *i != 0,
+            Value::Bool(b) => *b,
+            Value::Struct(hash_map) => !hash_map.is_empty(),
+            Value::Array(values) => !values.is_empty(),
+        },
+    }
 }
 
 fn eval_condition(render: &Render, block: &Block<&Expression>) -> bool {
-    false
+    let ret = eval_expression(render, block.content);
+    value_as_bool(&ret)
 }
