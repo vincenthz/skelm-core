@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::render::Value;
 
 use super::*;
@@ -101,4 +103,65 @@ Welcome to {{ company }}."#;
         r#"Hello Alice!
 Welcome to Acme Corp."#
     )
+}
+
+#[test]
+fn golden() {
+    fn values_from_json(
+        object: &serde_json::Map<String, serde_json::Value>,
+    ) -> HashMap<String, Value> {
+        object
+            .iter()
+            .map(|(k, v)| (k.clone(), value_from_json(v)))
+            .collect::<HashMap<_, _>>()
+    }
+
+    fn value_from_json(val: &serde_json::Value) -> Value {
+        match val {
+            serde_json::Value::Null => panic!("null not supported"),
+            serde_json::Value::Bool(b) => Value::Bool(*b),
+            serde_json::Value::Number(number) => Value::Int(number.as_u64().unwrap()),
+            serde_json::Value::String(s) => Value::String(s.clone()),
+            serde_json::Value::Array(values) => {
+                Value::Array(values.iter().map(value_from_json).collect::<Vec<_>>())
+            }
+            serde_json::Value::Object(object) => Value::Struct(values_from_json(object)),
+        }
+    }
+
+    fn golden_render(template: &str, values: serde_json::Value, expected: &str) {
+        let r = block(template).unwrap();
+        let syn = parse(&r).unwrap();
+        let ast = ast(&syn);
+
+        let serde_json::Value::Object(object) = values else {
+            panic!("expecting a golden test values to be an object")
+        };
+
+        let values = values_from_json(&object);
+
+        let rendered = render(&ast, &values);
+
+        assert_eq!(expected, rendered.trim());
+    }
+
+    macro_rules! test {
+        ($name:literal, $number:literal) => {
+            golden_render(
+                include_str!(concat!("../tests-files/", $name, ".j2")),
+                serde_json::from_str(include_str!(concat!(
+                    "../tests-files/",
+                    $name,
+                    "_",
+                    $number,
+                    ".json"
+                )))
+                .unwrap(),
+                include_str!(concat!("../tests-files/", $name, "_", $number, ".output")),
+            );
+        };
+    }
+
+    test!("hello", 1);
+    test!("users", 1);
 }

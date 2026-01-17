@@ -46,7 +46,8 @@ impl<'a> StatementAst<'a> {
                 if end.is_some() {
                     panic!("trying to push into a finished for");
                 }
-                todo!()
+                body.push(element);
+                //todo!()
             }
             StatementAst::Block(statement_asts) => statement_asts.push(element),
             StatementAst::Expression(_) | StatementAst::Comment(_) | StatementAst::Text(_) => {

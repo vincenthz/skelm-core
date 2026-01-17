@@ -5,7 +5,7 @@ use super::StripStyle;
 
 use super::{
     Expression,
-    ast::{Operator, StatementAst},
+    ast::{ArraySubexpr, Operator, StatementAst},
     block::Block,
 };
 
@@ -93,7 +93,29 @@ impl<'a, 'b> Render<'a, 'b> {
                         }
                     }
                 }
-                StatementAst::For { binder, body, end } => {}
+                StatementAst::For { binder, body, end } => {
+                    let (name, expression) = binder.content;
+                    let val = eval_expression(self, expression);
+                    match val {
+                        Some(val) => match val {
+                            Value::String(_) => {}
+                            Value::Int(_) => {}
+                            Value::Bool(_) => {}
+                            Value::Array(values) => {
+                                for val in values {
+                                    self.locals.push_context();
+                                    self.locals.push_value(name, val);
+
+                                    self.eval_statements(&body);
+
+                                    self.locals.pop_context();
+                                }
+                            }
+                            Value::Struct(hash_map) => todo!(),
+                        },
+                        None => {}
+                    }
+                }
                 StatementAst::Block(statement_asts) => {
                     self.eval_statements(&statement_asts);
                 }
@@ -119,6 +141,11 @@ impl<'a, 'b> Render<'a, 'b> {
                                 block.left_strip_style,
                                 block.right_strip_style,
                                 &format!("{}", b),
+                            ),
+                            Value::Array(_hash_map) => self.push_str(
+                                block.left_strip_style,
+                                block.right_strip_style,
+                                &format!("[array]"),
                             ),
                         }
                     }
@@ -153,6 +180,12 @@ fn eval_expression(render: &Render, expression: &Expression) -> Option<Value> {
         Expression::Boolean(b) => Some(Value::Bool(*b)),
         Expression::ArraySubscript(expression, array_subexpr) => {
             let val = eval_expression(render, expression);
+            match array_subexpr {
+                ArraySubexpr::Value(expression) => {
+                    let subscript = eval_expression(render, expression);
+                }
+                ArraySubexpr::Range(_, _) => todo!(),
+            }
             match val {
                 Some(val) => {
                     match val {
@@ -172,7 +205,14 @@ fn eval_expression(render: &Render, expression: &Expression) -> Option<Value> {
                 None => None,
             }
         }
-        Expression::MemberAccess(expression, _) => todo!(),
+        Expression::MemberAccess(expression, field) => {
+            let val = eval_expression(render, expression);
+            let Some(Value::Struct(fields)) = val else {
+                panic!("accessing non structure")
+            };
+            let val = fields.get(field);
+            val.cloned()
+        }
         Expression::Call(expression, items) => todo!(),
         Expression::Filter(expression, expression1) => todo!(),
         Expression::LogicalAnd(e1, e2) => {
