@@ -1,17 +1,27 @@
 use skelm_llama_cpp_sys::llama;
 use thiserror::Error;
 
-use crate::{batch::Batch, token::Token, Model, Sampler, Vocab};
+use crate::{Model, Sampler, Vocab, batch::Batch, token::Token};
 
 #[allow(dead_code)]
 pub struct Context {
     pub(crate) model: Model,
     pub(crate) tokens: usize,
     pub(crate) context_params: llama::llama_context_params,
-    pub(crate) ptr: *mut llama::llama_context,
+    pub(crate) ptr: ContextPtr,
 }
 
 unsafe impl Send for Context {}
+
+pub struct ContextPtr(pub(crate) *mut llama::llama_context);
+
+impl Drop for ContextPtr {
+    fn drop(&mut self) {
+        unsafe {
+            llama::llama_free(self.0);
+        }
+    }
+}
 
 pub struct ContextParams {
     pub n_ctx: u32,
@@ -112,7 +122,7 @@ impl Context {
     pub fn new(model: Model, params: &ContextParams) -> Result<Self, ContextCreateError> {
         let c_params = params.as_c();
         let c_params_clone = params.as_c();
-        let ctx = unsafe { llama::llama_new_context_with_model(model.ptr.0, c_params) };
+        let ctx = unsafe { llama::llama_init_from_model(model.ptr.0, c_params) };
         if ctx.is_null() {
             return Err(ContextCreateError);
         }
@@ -121,7 +131,7 @@ impl Context {
             model,
             tokens: 0,
             context_params: c_params_clone,
-            ptr: ctx,
+            ptr: ContextPtr(ctx),
         })
     }
 
@@ -149,42 +159,42 @@ impl Context {
     }
 
     pub fn n_ctx(&self) -> u32 {
-        unsafe { llama::llama_n_ctx(self.ptr) }
+        unsafe { llama::llama_n_ctx(self.ptr.0) }
     }
 
     pub fn n_batch(&self) -> u32 {
-        unsafe { llama::llama_n_batch(self.ptr) }
+        unsafe { llama::llama_n_batch(self.ptr.0) }
     }
 
     pub fn n_ubatch(&self) -> u32 {
-        unsafe { llama::llama_n_ubatch(self.ptr) }
+        unsafe { llama::llama_n_ubatch(self.ptr.0) }
     }
 
     pub fn state_get(&self) -> Vec<u8> {
-        let state_size = unsafe { llama::llama_state_get_size(self.ptr) };
+        let state_size = unsafe { llama::llama_state_get_size(self.ptr.0) };
 
         let mut state = vec![0; state_size];
         unsafe {
-            llama::llama_state_get_data(self.ptr, state.as_mut_ptr(), state_size);
+            llama::llama_state_get_data(self.ptr.0, state.as_mut_ptr(), state_size);
         }
         state
     }
 
     pub fn state_set(&mut self, data: &[u8]) {
-        let read = unsafe { llama::llama_state_set_data(self.ptr, data.as_ptr(), data.len()) };
+        let read = unsafe { llama::llama_state_set_data(self.ptr.0, data.as_ptr(), data.len()) };
         assert_eq!(read, data.len());
     }
 
     pub fn memory_clear(&self, clear_data: bool) {
         unsafe {
-            let memory = llama::llama_get_memory(self.ptr);
+            let memory = llama::llama_get_memory(self.ptr.0);
             llama::llama_memory_clear(memory, clear_data)
         }
     }
 
     fn decode(&self, batch: &Batch) -> Result<(), DecodeError> {
         let b = batch.dup_batch();
-        let ret = unsafe { llama::llama_decode(self.ptr, b) };
+        let ret = unsafe { llama::llama_decode(self.ptr.0, b) };
         match ret {
             0 => Ok(()),
             1 => Err(DecodeError::CannotFindKVSlot),
@@ -221,13 +231,13 @@ impl Context {
     }
 
     pub fn pooling_type(&self) -> PoolingType {
-        let pooling_type = unsafe { llama::llama_pooling_type(self.ptr) };
+        let pooling_type = unsafe { llama::llama_pooling_type(self.ptr.0) };
         pooling_type.into()
     }
 
     pub fn get_logits(&self, i: i32) -> &[f32] {
         unsafe {
-            let logits = llama::llama_get_logits_ith(self.ptr, i);
+            let logits = llama::llama_get_logits_ith(self.ptr.0, i);
             core::slice::from_raw_parts(logits as *const _, self.model.vocab().n_tokens() as usize)
         }
     }
@@ -236,7 +246,7 @@ impl Context {
         let n_embd = self.model.n_embd() as usize;
 
         unsafe {
-            let embedding = llama::llama_get_embeddings_seq(self.ptr, i);
+            let embedding = llama::llama_get_embeddings_seq(self.ptr.0, i);
             if embedding == core::ptr::null_mut() {
                 return Err(EmbeddingSeqError(i));
             }
