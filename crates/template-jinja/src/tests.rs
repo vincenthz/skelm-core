@@ -107,15 +107,6 @@ Welcome to Acme Corp."#
 
 #[test]
 fn golden() {
-    fn values_from_json(
-        object: &serde_json::Map<String, serde_json::Value>,
-    ) -> HashMap<String, Value> {
-        object
-            .iter()
-            .map(|(k, v)| (k.clone(), value_from_json(v)))
-            .collect::<HashMap<_, _>>()
-    }
-
     fn value_from_json(val: &serde_json::Value) -> Value {
         match val {
             serde_json::Value::Null => panic!("null not supported"),
@@ -125,7 +116,13 @@ fn golden() {
             serde_json::Value::Array(values) => {
                 Value::Array(values.iter().map(value_from_json).collect::<Vec<_>>())
             }
-            serde_json::Value::Object(object) => Value::Struct(values_from_json(object)),
+            serde_json::Value::Object(object) => {
+                let values = object
+                    .iter()
+                    .map(|(k, v)| (k.clone(), value_from_json(v)))
+                    .collect::<HashMap<_, _>>();
+                Value::Struct(values)
+            }
         }
     }
 
@@ -138,7 +135,10 @@ fn golden() {
             panic!("expecting a golden test values to be an object")
         };
 
-        let values = values_from_json(&object);
+        let values = object
+            .iter()
+            .map(|(k, v)| (k.clone(), value_from_json(v)))
+            .collect::<HashMap<_, _>>();
 
         let rendered = render(&ast, &values);
 
