@@ -256,6 +256,10 @@ impl Context {
         self.tokens = n;
     }
 
+    pub fn get_tokens(&self) -> usize {
+        self.tokens
+    }
+
     pub fn get_logits(&self, i: i32) -> &[f32] {
         unsafe {
             let logits = llama::llama_get_logits_ith(self.ptr, i);
