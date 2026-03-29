@@ -6,7 +6,7 @@ use crate::{batch::Batch, token::Token, Model, Sampler, Vocab};
 #[allow(dead_code)]
 pub struct Context {
     pub(crate) model: Model,
-    pub(crate) tokens: usize,
+    pub tokens: usize,
     pub(crate) context_params: llama::llama_context_params,
     pub(crate) ptr: *mut llama::llama_context,
 }
@@ -254,10 +254,6 @@ impl Context {
     /// to keep Context.tokens in sync with the GPU-side KV state.
     pub fn set_tokens(&mut self, n: usize) {
         self.tokens = n;
-    }
-
-    pub fn get_tokens(&self) -> usize {
-        self.tokens
     }
 
     pub fn get_logits(&self, i: i32) -> &[f32] {
