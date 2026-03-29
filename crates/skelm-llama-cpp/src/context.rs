@@ -21,7 +21,7 @@ pub struct ContextParams {
 impl Default for ContextParams {
     fn default() -> Self {
         let mut context = unsafe { llama::llama_context_default_params() };
-        context.n_ctx = 16384;
+        context.n_ctx = 1024;
         Self {
             n_ctx: context.n_ctx,
             embeddings: context.embeddings,
@@ -223,6 +223,37 @@ impl Context {
     pub fn pooling_type(&self) -> PoolingType {
         let pooling_type = unsafe { llama::llama_pooling_type(self.ptr) };
         pooling_type.into()
+    }
+
+    /// Remove KV entries in [p0, p1) for seq_id 0.
+    /// p0 < 0 means from start; p1 < 0 means to end.
+    pub fn kv_seq_rm(&mut self, p0: i32, p1: i32) -> bool {
+        let mem = unsafe { llama::llama_get_memory(self.ptr) };
+        unsafe { llama::llama_memory_seq_rm(mem, 0, p0, p1) }
+    }
+
+    /// Copy KV entries from seq 0 to dst_seq in [p0, p1).
+    pub fn kv_seq_cp(&self, dst_seq: i32, p0: i32, p1: i32) {
+        let mem = unsafe { llama::llama_get_memory(self.ptr) };
+        unsafe { llama::llama_memory_seq_cp(mem, 0, dst_seq, p0, p1) }
+    }
+
+    /// Keep only entries for seq_id, remove all others.
+    pub fn kv_seq_keep(&self, seq_id: i32) {
+        let mem = unsafe { llama::llama_get_memory(self.ptr) };
+        unsafe { llama::llama_memory_seq_keep(mem, seq_id) }
+    }
+
+    /// Current max position in KV cache for seq 0 (or -1 if empty).
+    pub fn kv_used(&self) -> i32 {
+        let mem = unsafe { llama::llama_get_memory(self.ptr) };
+        unsafe { llama::llama_memory_seq_pos_max(mem, 0) }
+    }
+
+    /// Reset the Rust-side position counter. Required after kv_seq_rm on rollback
+    /// to keep Context.tokens in sync with the GPU-side KV state.
+    pub fn set_tokens(&mut self, n: usize) {
+        self.tokens = n;
     }
 
     pub fn get_logits(&self, i: i32) -> &[f32] {
