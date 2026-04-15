@@ -64,6 +64,21 @@ impl Model {
         Context(self.clone(), self.model.new_context(&params).unwrap())
     }
 
+    pub fn new_context_n_ctx(&self, n_ctx: u32) -> Context {
+        let params = llama::ContextParams { n_ctx, ..llama::ContextParams::default() };
+        Context(self.clone(), self.model.new_context(&params).unwrap())
+    }
+
+    pub fn new_context_quantized(&self, n_ctx: u32, type_k: u32, type_v: u32) -> Context {
+        let params = llama::ContextParams {
+            n_ctx,
+            type_k: Some(type_k),
+            type_v: Some(type_v),
+            ..llama::ContextParams::default()
+        };
+        Context(self.clone(), self.model.new_context(&params).unwrap())
+    }
+
     pub fn new_context_embeddings(&self) -> Context {
         if self.model.has_encoder() && self.model.has_decoder() {
             panic!("cannot generate embeddings in models with encoder-decoder")
@@ -78,19 +93,18 @@ impl Model {
     pub fn model_template_render(&self, parameters: &ModelParameters) -> String {
         match self.config.as_ref() {
             ModelConfig::Ollama(_model_config) => {
-                implicit_model_template(self, &parameters.system, &parameters.prompt)
+                implicit_model_template(self, &parameters.system, &parameters.prompt, &parameters.tools)
             }
             ModelConfig::Implicit => {
-                implicit_model_template(self, &parameters.system, &parameters.prompt)
+                implicit_model_template(self, &parameters.system, &parameters.prompt, &parameters.tools)
             }
         }
     }
 }
 
-fn implicit_model_template(model: &Model, system: &str, prompt: &str) -> String {
+fn implicit_model_template(model: &Model, system: &str, prompt: &str, tools: &[ToolDef]) -> String {
     if let Some(template) = model.model.chat_template() {
-        //println!("template:\n{}", template);
-        match chat_template(&template, &system, &prompt) {
+        match template::chat_template_with_tools(&template, &system, &prompt, tools) {
             Err(e) => {
                 eprintln!("rendering chat template failed: {}", e);
                 eprintln!("chat template:");
@@ -112,6 +126,23 @@ fn implicit_model_template(model: &Model, system: &str, prompt: &str) -> String 
 pub struct ModelParameters {
     pub system: String,
     pub prompt: String,
+    pub tools: Vec<ToolDef>,
+}
+
+/// Tool definition for chat template rendering.
+#[derive(Clone, Debug)]
+pub struct ToolDef {
+    pub name: String,
+    pub description: String,
+    pub parameters: Vec<ToolParam>,
+}
+
+/// Tool parameter definition.
+#[derive(Clone, Debug)]
+pub struct ToolParam {
+    pub name: String,
+    pub param_type: String,
+    pub required: bool,
 }
 
 pub struct Context(pub Model, pub llama::Context);

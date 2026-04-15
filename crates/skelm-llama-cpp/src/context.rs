@@ -16,6 +16,8 @@ unsafe impl Send for Context {}
 pub struct ContextParams {
     pub n_ctx: u32,
     pub embeddings: bool,
+    pub type_k: Option<u32>,  // ggml_type as u32; None = default (f16)
+    pub type_v: Option<u32>,  // ggml_type as u32; None = default (f16)
 }
 
 impl Default for ContextParams {
@@ -25,6 +27,8 @@ impl Default for ContextParams {
         Self {
             n_ctx: context.n_ctx,
             embeddings: context.embeddings,
+            type_k: None,
+            type_v: None,
         }
     }
 }
@@ -34,6 +38,12 @@ impl ContextParams {
         let mut context = unsafe { llama::llama_context_default_params() };
         context.n_ctx = self.n_ctx;
         context.embeddings = self.embeddings;
+        if let Some(tk) = self.type_k {
+            context.type_k = unsafe { std::mem::transmute(tk) };
+        }
+        if let Some(tv) = self.type_v {
+            context.type_v = unsafe { std::mem::transmute(tv) };
+        }
         context
     }
 }
@@ -123,6 +133,20 @@ impl Context {
             context_params: c_params_clone,
             ptr: ctx,
         })
+    }
+
+    /// Create a Context from a raw llama_context pointer.
+    ///
+    /// # Safety
+    /// The caller must ensure that `ptr` is a valid, non-null llama_context
+    /// created from the given model with compatible parameters.
+    pub unsafe fn from_raw(model: Model, ptr: *mut llama::llama_context, params: &ContextParams) -> Self {
+        Self {
+            model,
+            tokens: 0,
+            context_params: params.as_c(),
+            ptr,
+        }
     }
 
     pub fn model(&self) -> &Model {
@@ -248,6 +272,66 @@ impl Context {
     pub fn kv_used(&self) -> i32 {
         let mem = unsafe { llama::llama_get_memory(self.ptr) };
         unsafe { llama::llama_memory_seq_pos_max(mem, 0) }
+    }
+
+    /// Serialize the KV state for a single sequence.
+    pub fn state_seq_get(&self, seq_id: i32) -> Vec<u8> {
+        let size = unsafe { llama::llama_state_seq_get_size(self.ptr, seq_id) };
+        let mut buf = vec![0u8; size];
+        let written = unsafe {
+            llama::llama_state_seq_get_data(self.ptr, buf.as_mut_ptr(), size, seq_id)
+        };
+        assert!(written > 0, "llama_state_seq_get_data failed");
+        buf.truncate(written);
+        buf
+    }
+
+    /// Deserialize KV state into a specific sequence.
+    /// Returns the number of bytes read.
+    pub fn state_seq_set(&mut self, data: &[u8], dest_seq_id: i32) -> usize {
+        let read = unsafe {
+            llama::llama_state_seq_set_data(self.ptr, data.as_ptr(), data.len(), dest_seq_id)
+        };
+        assert!(read > 0, "llama_state_seq_set_data failed");
+        read
+    }
+
+    /// Add a position delta to all KV entries for seq_id in [p0, p1).
+    /// p0 < 0 means from start; p1 < 0 means to end.
+    pub fn memory_seq_add(&self, seq_id: i32, p0: i32, p1: i32, delta: i32) {
+        let mem = unsafe { llama::llama_get_memory(self.ptr) };
+        unsafe { llama::llama_memory_seq_add(mem, seq_id, p0, p1, delta) }
+    }
+
+    /// Copy KV entries from src_seq to dst_seq in [p0, p1).
+    pub fn memory_seq_cp(&self, src_seq: i32, dst_seq: i32, p0: i32, p1: i32) {
+        let mem = unsafe { llama::llama_get_memory(self.ptr) };
+        unsafe { llama::llama_memory_seq_cp(mem, src_seq, dst_seq, p0, p1) }
+    }
+
+    /// Remove KV entries for seq_id in [p0, p1).
+    /// seq_id < 0 matches any sequence.
+    pub fn memory_seq_rm(&self, seq_id: i32, p0: i32, p1: i32) -> bool {
+        let mem = unsafe { llama::llama_get_memory(self.ptr) };
+        unsafe { llama::llama_memory_seq_rm(mem, seq_id, p0, p1) }
+    }
+
+    /// Smallest position in KV cache for seq_id (or -1 if empty).
+    pub fn memory_seq_pos_min(&self, seq_id: i32) -> i32 {
+        let mem = unsafe { llama::llama_get_memory(self.ptr) };
+        unsafe { llama::llama_memory_seq_pos_min(mem, seq_id) }
+    }
+
+    /// Largest position in KV cache for seq_id (or -1 if empty).
+    pub fn memory_seq_pos_max(&self, seq_id: i32) -> i32 {
+        let mem = unsafe { llama::llama_get_memory(self.ptr) };
+        unsafe { llama::llama_memory_seq_pos_max(mem, seq_id) }
+    }
+
+    /// Check if the memory backend supports position shifting.
+    pub fn memory_can_shift(&self) -> bool {
+        let mem = unsafe { llama::llama_get_memory(self.ptr) };
+        unsafe { llama::llama_memory_can_shift(mem) }
     }
 
     /// Reset the Rust-side position counter. Required after kv_seq_rm on rollback
