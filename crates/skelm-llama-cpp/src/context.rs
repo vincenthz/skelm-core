@@ -185,6 +185,24 @@ impl Context {
         assert_eq!(read, data.len());
     }
 
+    /// Serializes the KV state of a single sequence into a buffer.
+    pub fn state_seq_get(&self, seq_id: i32) -> Vec<u8> {
+        let size = unsafe { llama::llama_state_seq_get_size(self.ptr.0, seq_id) };
+        let mut buf = vec![0u8; size];
+        unsafe {
+            llama::llama_state_seq_get_data(self.ptr.0, buf.as_mut_ptr(), size, seq_id);
+        }
+        buf
+    }
+
+    /// Loads previously-serialized sequence KV state into `dest_seq_id`.
+    /// Returns the number of bytes consumed; zero indicates failure.
+    pub fn state_seq_set(&mut self, data: &[u8], dest_seq_id: i32) -> usize {
+        unsafe {
+            llama::llama_state_seq_set_data(self.ptr.0, data.as_ptr(), data.len(), dest_seq_id)
+        }
+    }
+
     /// Returns a read-only handle to this context's memory (KV cache and related state).
     ///
     /// The handle borrows from the context and cannot outlive it. Only operations
