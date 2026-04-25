@@ -31,6 +31,11 @@ impl Drop for ContextPtr {
 pub struct ContextParams {
     pub n_ctx: u32,
     pub embeddings: bool,
+    /// Maximum number of distinct sequence ids the context can address. Default is 1.
+    /// Patterns that load multiple serialized sequence states into a single context
+    /// (e.g. KV cache composition) need this set to the number of seq_ids they use.
+    /// Without it `state_seq_set_data` silently fails for any seq_id >= n_seq_max.
+    pub n_seq_max: u32,
 }
 
 impl Default for ContextParams {
@@ -40,6 +45,7 @@ impl Default for ContextParams {
         Self {
             n_ctx: context.n_ctx,
             embeddings: context.embeddings,
+            n_seq_max: context.n_seq_max,
         }
     }
 }
@@ -49,6 +55,7 @@ impl ContextParams {
         let mut context = unsafe { llama::llama_context_default_params() };
         context.n_ctx = self.n_ctx;
         context.embeddings = self.embeddings;
+        context.n_seq_max = self.n_seq_max;
         context
     }
 }
