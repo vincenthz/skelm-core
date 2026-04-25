@@ -11,7 +11,7 @@ mod token;
 mod tokendata;
 mod vocab;
 
-pub use context::{Context, ContextParams, Memory};
+pub use context::{Context, ContextParams, Memory, MemoryMut};
 pub use log::{LogKey, LogLevel, llama_logging};
 pub use model::{Model, ModelLoadError, ModelParams};
 pub use sampler::{
