@@ -185,10 +185,14 @@ impl Context {
         assert_eq!(read, data.len());
     }
 
-    pub fn memory_clear(&self, clear_data: bool) {
-        unsafe {
-            let memory = llama::llama_get_memory(self.ptr.0);
-            llama::llama_memory_clear(memory, clear_data)
+    /// Returns a handle to this context's memory (KV cache and related state).
+    ///
+    /// The returned handle borrows from the context and cannot outlive it.
+    pub fn memory(&self) -> Memory<'_> {
+        let raw = unsafe { llama::llama_get_memory(self.ptr.0) };
+        Memory {
+            raw,
+            _marker: std::marker::PhantomData,
         }
     }
 
@@ -253,5 +257,20 @@ impl Context {
 
             Ok(core::slice::from_raw_parts(embedding, n_embd))
         }
+    }
+}
+
+/// Handle to a context's memory (KV cache and related state).
+///
+/// Returned from [`Context::memory`]. Carries the lifetime of the borrowed context.
+pub struct Memory<'a> {
+    raw: llama::llama_memory_t,
+    _marker: std::marker::PhantomData<&'a Context>,
+}
+
+impl<'a> Memory<'a> {
+    /// Clears the entire memory. If `clear_data` is true, underlying buffers are zeroed.
+    pub fn clear(&self, clear_data: bool) {
+        unsafe { llama::llama_memory_clear(self.raw, clear_data) }
     }
 }
