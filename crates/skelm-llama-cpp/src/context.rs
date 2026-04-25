@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use skelm_llama_cpp_sys::llama;
 use thiserror::Error;
 
@@ -8,12 +10,15 @@ pub struct Context {
     pub(crate) model: Model,
     pub(crate) tokens: usize,
     pub(crate) context_params: llama::llama_context_params,
-    pub(crate) ptr: ContextPtr,
+    pub(crate) ptr: Arc<ContextPtr>,
 }
 
 unsafe impl Send for Context {}
 
 pub struct ContextPtr(pub(crate) *mut llama::llama_context);
+
+unsafe impl Send for ContextPtr {}
+unsafe impl Sync for ContextPtr {}
 
 impl Drop for ContextPtr {
     fn drop(&mut self) {
@@ -131,7 +136,7 @@ impl Context {
             model,
             tokens: 0,
             context_params: c_params_clone,
-            ptr: ContextPtr(ctx),
+            ptr: Arc::new(ContextPtr(ctx)),
         })
     }
 
@@ -205,12 +210,15 @@ impl Context {
 
     /// Returns a read-only handle to this context's memory (KV cache and related state).
     ///
-    /// The handle borrows the context, so it cannot outlive it; the borrow is enforced
-    /// structurally via a real reference, not just a phantom marker. Only operations
-    /// that do not mutate KV state are exposed; for mutating operations use
-    /// [`memory_mut`](Self::memory_mut).
-    pub fn memory(&self) -> Memory<'_> {
-        Memory { ctx: self }
+    /// The handle holds a refcounted clone of the context's underlying llama_context
+    /// (mirroring how `Context` itself holds `Model` by value). The KV memory therefore
+    /// stays alive as long as either the originating `Context` or any outstanding
+    /// `Memory` handle exists, and is freed exactly when the last reference drops.
+    /// For mutating operations use [`memory_mut`](Self::memory_mut).
+    pub fn memory(&self) -> Memory {
+        Memory {
+            ptr: self.ptr.clone(),
+        }
     }
 
     /// Returns a mutating handle to this context's memory (KV cache and related state).
@@ -302,19 +310,19 @@ impl Context {
 
 /// Read-only handle to a context's memory (KV cache and related state).
 ///
-/// Returned from [`Context::memory`]. Holds an actual `&Context` borrow (not a
-/// phantom marker) so the relationship to the parent context is structural and
-/// cannot be erased through `unsafe`. The KV memory itself is owned by the
-/// context and freed when it is dropped.
-pub struct Memory<'a> {
-    ctx: &'a Context,
+/// Returned from [`Context::memory`]. Owns a refcounted clone of the underlying
+/// `llama_context` (mirroring the `Context`-holds-`Model` ownership pattern), so
+/// the cache stays alive while any `Memory` exists and is freed exactly when the
+/// last handle drops.
+pub struct Memory {
+    ptr: Arc<ContextPtr>,
 }
 
-impl<'a> Memory<'a> {
+impl Memory {
     /// Smallest position currently held in the cache for the given sequence id.
     pub fn seq_pos_min(&self, seq_id: i32) -> i32 {
         unsafe {
-            let raw = llama::llama_get_memory(self.ctx.ptr.0);
+            let raw = llama::llama_get_memory(self.ptr.0);
             llama::llama_memory_seq_pos_min(raw, seq_id)
         }
     }
@@ -322,7 +330,7 @@ impl<'a> Memory<'a> {
     /// Largest position currently held in the cache for the given sequence id.
     pub fn seq_pos_max(&self, seq_id: i32) -> i32 {
         unsafe {
-            let raw = llama::llama_get_memory(self.ctx.ptr.0);
+            let raw = llama::llama_get_memory(self.ptr.0);
             llama::llama_memory_seq_pos_max(raw, seq_id)
         }
     }
@@ -330,7 +338,7 @@ impl<'a> Memory<'a> {
     /// Whether this memory implementation supports position shifts via [`MemoryMut::seq_add`].
     pub fn can_shift(&self) -> bool {
         unsafe {
-            let raw = llama::llama_get_memory(self.ctx.ptr.0);
+            let raw = llama::llama_get_memory(self.ptr.0);
             llama::llama_memory_can_shift(raw)
         }
     }
