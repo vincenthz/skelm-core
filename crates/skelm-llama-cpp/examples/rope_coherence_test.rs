@@ -179,6 +179,7 @@ fn test_single_slice_shift(
     ctx_params: &ContextParams,
     gen_tokens: usize,
     supports_shift: bool,
+    supports_partial_seq_cp: bool,
 ) -> (String, String, ShiftOutcome) {
     print_section("TEST 1 — Single-slice position-shifted KV injection");
 
@@ -203,6 +204,10 @@ fn test_single_slice_shift(
     if !supports_shift {
         return (baseline_output, String::new(),
             ShiftOutcome::Skipped("memory backend reports can_shift = false (Mamba / hybrid models)"));
+    }
+    if !supports_partial_seq_cp {
+        return (baseline_output, String::new(),
+            ShiftOutcome::Skipped("model uses interleaved sliding-window attention; partial cross-stream seq_cp is unsupported in stock llama.cpp (asserts is_full)"));
     }
 
     // Composition path.
@@ -247,6 +252,7 @@ fn test_multi_slice_shift(
     ctx_params: &ContextParams,
     gen_tokens: usize,
     supports_shift: bool,
+    supports_partial_seq_cp: bool,
 ) -> (String, String, ShiftOutcome) {
     print_section("TEST 2 — Multi-slice position-shifted KV injection (3 segments)");
 
@@ -272,6 +278,10 @@ fn test_multi_slice_shift(
     if !supports_shift {
         return (baseline_multi, String::new(),
             ShiftOutcome::Skipped("memory backend reports can_shift = false"));
+    }
+    if !supports_partial_seq_cp {
+        return (baseline_multi, String::new(),
+            ShiftOutcome::Skipped("model uses interleaved sliding-window attention; partial cross-stream seq_cp is unsupported in stock llama.cpp"));
     }
 
     // Serialize each segment.
@@ -356,8 +366,28 @@ fn main() {
         drop(probe);
         s
     };
+
+    // Detect interleaved sliding-window attention (iswa) models. Their KV cache
+    // backend (`llama_kv_cache_iswa`) routes cross-stream seq_cp through
+    // `llama_kv_cache::seq_cp`, which aborts with `GGML_ASSERT(is_full)` for
+    // partial-range copies. Our composition pattern uses a partial copy from a
+    // scratch sequence into the target sequence, which is exactly the path that
+    // is forbidden, so we must skip TESTS 1 and 2 on these models.
+    //
+    // Detection: presence of an `<arch>.attention.sliding_window` metadata
+    // entry. The architecture name comes from `general.architecture`.
+    let arch = model.architecture().unwrap_or_default();
+    let supports_partial_seq_cp = if arch.is_empty() {
+        true
+    } else {
+        let key = format!("{}.attention.sliding_window", arch);
+        model.meta_str(&key).is_none()
+    };
+
+    println!("model architecture: {}", if arch.is_empty() { "<unknown>" } else { &arch });
     println!("memory backend can_shift = {}", supports_shift);
-    if !supports_shift {
+    println!("supports partial cross-stream seq_cp = {}", supports_partial_seq_cp);
+    if !supports_shift || !supports_partial_seq_cp {
         println!("  Note: TEST 1 and TEST 2 will be SKIPPED for this model.");
     }
 
@@ -365,12 +395,16 @@ fn main() {
     let t3_pass = test_round_trip(&model, &vocab, &ctx_params, gen_tokens);
 
     // TEST 1 and TEST 2 — measurement only, never block PASS.
-    let (t1_baseline, t1_composed, t1_outcome) =
-        test_single_slice_shift(&model, &vocab, &ctx_params, gen_tokens, supports_shift);
+    let (t1_baseline, t1_composed, t1_outcome) = test_single_slice_shift(
+        &model, &vocab, &ctx_params, gen_tokens,
+        supports_shift, supports_partial_seq_cp,
+    );
     report_shift_outcome("TEST 1", &t1_baseline, &t1_composed, &t1_outcome);
 
-    let (t2_baseline, t2_composed, t2_outcome) =
-        test_multi_slice_shift(&model, &vocab, &ctx_params, gen_tokens, supports_shift);
+    let (t2_baseline, t2_composed, t2_outcome) = test_multi_slice_shift(
+        &model, &vocab, &ctx_params, gen_tokens,
+        supports_shift, supports_partial_seq_cp,
+    );
     report_shift_outcome("TEST 2", &t2_baseline, &t2_composed, &t2_outcome);
 
     // ===================================================================
