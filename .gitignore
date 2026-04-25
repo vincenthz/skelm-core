@@ -1,2 +1,6 @@
 target/
 Cargo.lock
+.planning
+CLAUDE.md
+AGENTS.md
+.claude/
