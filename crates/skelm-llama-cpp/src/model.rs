@@ -109,6 +109,14 @@ impl Model {
         Context::new(self.clone(), params)
     }
 
+    /// Returns the raw llama_model pointer.
+    ///
+    /// # Safety
+    /// The caller must not free or invalidate the returned pointer.
+    pub unsafe fn as_raw(&self) -> *mut llama::llama_model {
+        self.ptr.0
+    }
+
     pub fn chat_template(&self) -> Option<String> {
         unsafe {
             let ptr = llama::llama_model_chat_template(self.ptr.0, core::ptr::null());
