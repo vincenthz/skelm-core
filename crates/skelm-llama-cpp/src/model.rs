@@ -92,6 +92,43 @@ impl Model {
         String::from_utf8(buf).unwrap()
     }
 
+    /// Reads a string-typed metadata value from the model by key.
+    ///
+    /// Common keys: `general.architecture`, `general.name`,
+    /// `<arch>.attention.sliding_window`, `tokenizer.chat_template`.
+    /// Returns `None` if the key is absent or its value is not a string.
+    pub fn meta_str(&self, key: &str) -> Option<String> {
+        let c_key = std::ffi::CString::new(key).ok()?;
+        // Probe size first.
+        let needed = unsafe {
+            llama::llama_model_meta_val_str(self.ptr.0, c_key.as_ptr(), std::ptr::null_mut(), 0)
+        };
+        if needed < 0 {
+            return None;
+        }
+        let cap = (needed as usize) + 1;
+        let mut buf = vec![0u8; cap];
+        let written = unsafe {
+            llama::llama_model_meta_val_str(
+                self.ptr.0,
+                c_key.as_ptr(),
+                buf.as_mut_ptr() as *mut ::std::os::raw::c_char,
+                cap,
+            )
+        };
+        if written < 0 {
+            return None;
+        }
+        buf.truncate(written as usize);
+        String::from_utf8(buf).ok()
+    }
+
+    /// Convenience wrapper for the `general.architecture` metadata key
+    /// (e.g. "llama", "qwen3", "gemma4").
+    pub fn architecture(&self) -> Option<String> {
+        self.meta_str("general.architecture")
+    }
+
     pub fn has_encoder(&self) -> bool {
         unsafe { llama::llama_model_has_encoder(self.ptr.0) }
     }

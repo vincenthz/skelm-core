@@ -252,7 +252,11 @@ async fn cmd_run(
 
     let model = skelm_exec::Model::load(&model_descr)?;
 
-    let parameters = ModelParameters { system, prompt };
+    let parameters = ModelParameters {
+        system,
+        prompt,
+        tools: Vec::new(),
+    };
     let template = model.model_template_render(&parameters);
 
     let mut context = model.new_context();
