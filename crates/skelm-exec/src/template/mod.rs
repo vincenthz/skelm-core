@@ -24,6 +24,15 @@ fn strftime_now(s: String) -> Result<String, minijinja::Error> {
 }
 
 pub fn chat_template(template: &str, system: &str, prompt: &str) -> Result<String, String> {
+    chat_template_with_tools(template, system, prompt, &[])
+}
+
+pub fn chat_template_with_tools(
+    template: &str,
+    system: &str,
+    prompt: &str,
+    tools: &[crate::ToolDef],
+) -> Result<String, String> {
     let mut env = minijinja::Environment::new();
     minijinja_contrib::add_to_environment(&mut env);
 
@@ -33,7 +42,6 @@ pub fn chat_template(template: &str, system: &str, prompt: &str) -> Result<Strin
 
     const MAIN: &str = "main";
 
-    //println!("{}", str);
     env.add_template(MAIN, template).unwrap();
 
     let tmpl = env.get_template(MAIN).unwrap();
@@ -41,8 +49,52 @@ pub fn chat_template(template: &str, system: &str, prompt: &str) -> Result<Strin
         context!(role => "system", content => system),
         context!(role => "user", content => prompt),
     ];
-    let tools: Vec<String> = Vec::new();
 
-    tmpl.render(context!(tools => tools, messages => messages))
-        .map_err(|e| format!("chat template error {}", e))
+    // Expose each tool to the model template in two shapes simultaneously,
+    // the OpenAI-style function wrapper (Gemma 4, Llama 3.x) and Qwen-style
+    // flat keys at the top level, so each model template finds whichever it expects.
+    let tool_values: Vec<minijinja::Value> = tools
+        .iter()
+        .map(|t| {
+            let make_params = || {
+                let props: std::collections::BTreeMap<String, minijinja::Value> = t
+                    .parameters
+                    .iter()
+                    .map(|p| {
+                        (
+                            p.name.clone(),
+                            context!(
+                                type => p.param_type.clone(),
+                                description => p.name.clone(),
+                                required => p.required
+                            )
+                            .into(),
+                        )
+                    })
+                    .collect();
+                context!(type => "object", properties => props)
+            };
+            let function_block = context!(
+                name => t.name.clone(),
+                description => t.description.clone(),
+                parameters => make_params()
+            );
+            context!(
+                type => "function",
+                function => function_block,
+                name => t.name.clone(),
+                description => t.description.clone(),
+                parameters => make_params()
+            )
+            .into()
+        })
+        .collect();
+
+    tmpl.render(context!(
+        tools => tool_values,
+        messages => messages,
+        enable_thinking => false,
+        add_generation_prompt => true
+    ))
+    .map_err(|e| format!("chat template error {}", e))
 }
