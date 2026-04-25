@@ -205,27 +205,21 @@ impl Context {
 
     /// Returns a read-only handle to this context's memory (KV cache and related state).
     ///
-    /// The handle borrows from the context and cannot outlive it. Only operations
+    /// The handle borrows the context, so it cannot outlive it; the borrow is enforced
+    /// structurally via a real reference, not just a phantom marker. Only operations
     /// that do not mutate KV state are exposed; for mutating operations use
     /// [`memory_mut`](Self::memory_mut).
     pub fn memory(&self) -> Memory<'_> {
-        let raw = unsafe { llama::llama_get_memory(self.ptr.0) };
-        Memory {
-            raw,
-            _marker: std::marker::PhantomData,
-        }
+        Memory { ctx: self }
     }
 
     /// Returns a mutating handle to this context's memory (KV cache and related state).
     ///
-    /// Takes `&mut self` so the borrow checker enforces exclusive access for the
+    /// Takes `&mut self`; the wrapper holds the exclusive borrow for its entire
+    /// lifetime, so the borrow checker enforces single-writer access for the
     /// duration of any KV mutations.
     pub fn memory_mut(&mut self) -> MemoryMut<'_> {
-        let raw = unsafe { llama::llama_get_memory(self.ptr.0) };
-        MemoryMut {
-            raw,
-            _marker: std::marker::PhantomData,
-        }
+        MemoryMut { ctx: self }
     }
 
     /// Number of tokens the context has decoded into its KV cache.
@@ -308,69 +302,102 @@ impl Context {
 
 /// Read-only handle to a context's memory (KV cache and related state).
 ///
-/// Returned from [`Context::memory`]; cannot outlive the context.
-/// Only operations that do not mutate KV state live here.
+/// Returned from [`Context::memory`]. Holds an actual `&Context` borrow (not a
+/// phantom marker) so the relationship to the parent context is structural and
+/// cannot be erased through `unsafe`. The KV memory itself is owned by the
+/// context and freed when it is dropped.
 pub struct Memory<'a> {
-    raw: llama::llama_memory_t,
-    _marker: std::marker::PhantomData<&'a Context>,
+    ctx: &'a Context,
 }
 
 impl<'a> Memory<'a> {
     /// Smallest position currently held in the cache for the given sequence id.
     pub fn seq_pos_min(&self, seq_id: i32) -> i32 {
-        unsafe { llama::llama_memory_seq_pos_min(self.raw, seq_id) }
+        unsafe {
+            let raw = llama::llama_get_memory(self.ctx.ptr.0);
+            llama::llama_memory_seq_pos_min(raw, seq_id)
+        }
     }
 
     /// Largest position currently held in the cache for the given sequence id.
     pub fn seq_pos_max(&self, seq_id: i32) -> i32 {
-        unsafe { llama::llama_memory_seq_pos_max(self.raw, seq_id) }
+        unsafe {
+            let raw = llama::llama_get_memory(self.ctx.ptr.0);
+            llama::llama_memory_seq_pos_max(raw, seq_id)
+        }
     }
 
     /// Whether this memory implementation supports position shifts via [`MemoryMut::seq_add`].
     pub fn can_shift(&self) -> bool {
-        unsafe { llama::llama_memory_can_shift(self.raw) }
+        unsafe {
+            let raw = llama::llama_get_memory(self.ctx.ptr.0);
+            llama::llama_memory_can_shift(raw)
+        }
     }
 }
 
 /// Mutating handle to a context's memory.
 ///
-/// Returned from [`Context::memory_mut`]; takes the context by `&mut` so the
-/// borrow checker enforces exclusive access for the duration of KV mutations.
+/// Returned from [`Context::memory_mut`]. Holds an actual `&mut Context` borrow
+/// so exclusive access is enforced structurally for the wrapper's lifetime.
 pub struct MemoryMut<'a> {
-    raw: llama::llama_memory_t,
-    _marker: std::marker::PhantomData<&'a mut Context>,
+    ctx: &'a mut Context,
 }
 
 impl<'a> MemoryMut<'a> {
     /// Clears the entire memory. If `clear_data` is true, underlying buffers are zeroed.
     pub fn clear(&mut self, clear_data: bool) {
-        unsafe { llama::llama_memory_clear(self.raw, clear_data) }
+        unsafe {
+            let raw = llama::llama_get_memory(self.ctx.ptr.0);
+            llama::llama_memory_clear(raw, clear_data)
+        }
     }
 
     /// Removes positions `[p0, p1)` of `seq_id` from the cache. `p0 < 0` means -infinity, `p1 < 0` means +infinity.
     /// Returns false if the cache cannot represent the request (e.g. partial removal not supported by the memory backend).
     pub fn seq_rm(&mut self, seq_id: i32, p0: i32, p1: i32) -> bool {
-        unsafe { llama::llama_memory_seq_rm(self.raw, seq_id, p0, p1) }
+        unsafe {
+            let raw = llama::llama_get_memory(self.ctx.ptr.0);
+            llama::llama_memory_seq_rm(raw, seq_id, p0, p1)
+        }
     }
 
     /// Copies positions `[p0, p1)` of `src` to `dst`.
     pub fn seq_cp(&mut self, src: i32, dst: i32, p0: i32, p1: i32) {
-        unsafe { llama::llama_memory_seq_cp(self.raw, src, dst, p0, p1) }
+        unsafe {
+            let raw = llama::llama_get_memory(self.ctx.ptr.0);
+            llama::llama_memory_seq_cp(raw, src, dst, p0, p1)
+        }
     }
 
     /// Removes everything except `seq_id` from the cache.
     pub fn seq_keep(&mut self, seq_id: i32) {
-        unsafe { llama::llama_memory_seq_keep(self.raw, seq_id) }
+        unsafe {
+            let raw = llama::llama_get_memory(self.ctx.ptr.0);
+            llama::llama_memory_seq_keep(raw, seq_id)
+        }
     }
 
     /// Shifts positions `[p0, p1)` of `seq_id` by `delta`. The memory implementation
     /// must support position shifts (see [`Memory::can_shift`]).
+    ///
+    /// Note: this updates the cache's position metadata only. RoPE is baked into
+    /// the K vectors at decode time and is not re-applied here, so generation
+    /// after a position-shifted KV injection may diverge from a baseline that
+    /// prefilled the equivalent prompt directly. See the rope_coherence_test
+    /// example for a measurement harness.
     pub fn seq_add(&mut self, seq_id: i32, p0: i32, p1: i32, delta: i32) {
-        unsafe { llama::llama_memory_seq_add(self.raw, seq_id, p0, p1, delta) }
+        unsafe {
+            let raw = llama::llama_get_memory(self.ctx.ptr.0);
+            llama::llama_memory_seq_add(raw, seq_id, p0, p1, delta)
+        }
     }
 
     /// Divides positions `[p0, p1)` of `seq_id` by `d`.
     pub fn seq_div(&mut self, seq_id: i32, p0: i32, p1: i32, d: i32) {
-        unsafe { llama::llama_memory_seq_div(self.raw, seq_id, p0, p1, d) }
+        unsafe {
+            let raw = llama::llama_get_memory(self.ctx.ptr.0);
+            llama::llama_memory_seq_div(raw, seq_id, p0, p1, d)
+        }
     }
 }
