@@ -142,7 +142,12 @@ fn golden() {
 
         let rendered = render(&ast, &values);
 
-        assert_eq!(expected, rendered.trim());
+        assert_eq!(
+            expected,
+            rendered.trim(),
+            "template \"{}\" fail golden render",
+            template
+        );
     }
 
     macro_rules! test {

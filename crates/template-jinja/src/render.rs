@@ -388,7 +388,7 @@ fn eval_filter(render: &Render, val: Value, expr: &Expression) -> Result<Option<
 }
 
 // filters
-// replace by a compile-time hashtable
+// TODO replace by a compile-time hashtable
 const BUILTIN_FILTERS: &[(&str, u32)] = &[
     ("abs", 10),
     ("attr", 10),
