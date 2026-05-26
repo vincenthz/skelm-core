@@ -47,6 +47,20 @@ const WARNING_FLAGS: &[&str] = &[
     //"-Wdouble-promotion",
 ];
 
+const GGML_VERSION_MAJOR: u64 = 0;
+const GGML_VERSION_MINOR: u64 = 13;
+const GGML_VERSION_PATCH: u64 = 0;
+const GGML_COMMIT: &str = "\"35c9b1f3\"";
+#[allow(unused)]
+const GGML_COMMIT_LONG: &str = "35c9b1f39ebe5a7bb83986d64415a079218be78d";
+
+fn ggml_version() -> String {
+    format!(
+        "{}.{}.{}",
+        GGML_VERSION_MAJOR, GGML_VERSION_MINOR, GGML_VERSION_PATCH
+    )
+}
+
 fn main() {
     let lib_path = std::path::PathBuf::from("libs");
 
@@ -109,6 +123,7 @@ fn lib_ggml(lib_path: &Path, out_path: &Path) -> Vec<PathBuf> {
     let cpp_files = [
         "ggml.cpp",
         "ggml-backend.cpp",
+        "ggml-backend-dl.cpp",
         "ggml-backend-meta.cpp",
         "ggml-opt.cpp",
         "ggml-threading.cpp",
@@ -125,8 +140,11 @@ fn lib_ggml(lib_path: &Path, out_path: &Path) -> Vec<PathBuf> {
     common.define("GGML_SCHED_MAX_COPIES", "4");
     common.define("GGML_SHARED", None);
     common.define("GGML_BUILD", None);
-    common.define("GGML_VERSION", "\"0.0.6458\""); // TODO fix version by not hardcoding
-    common.define("GGML_COMMIT", "\"40be5115\""); // TODO fix commit by not hardcoding
+    common.define(
+        "GGML_VERSION",
+        Some(format!("\"{}\"", ggml_version()).as_str()),
+    );
+    common.define("GGML_COMMIT", GGML_COMMIT);
     common.define("ggml_base_EXPORTS", None);
 
     common.define("GGML_USE_CPU", None);
@@ -332,72 +350,87 @@ fn lib_llama(lib_path: &Path, ggml_objects: Vec<PathBuf>) {
         "models/chatglm.cpp",
         "models/codeshell.cpp",
         "models/cogvlm.cpp",
-        "models/cohere2-iswa.cpp",
+        "models/cohere2.cpp",
         "models/command-r.cpp",
         "models/dbrx.cpp",
         "models/deci.cpp",
         "models/deepseek.cpp",
         "models/deepseek2.cpp",
+        "models/deepseek2ocr.cpp",
         "models/delta-net-base.cpp",
         "models/dots1.cpp",
         "models/dream.cpp",
-        "models/ernie4-5-moe.cpp",
         "models/ernie4-5.cpp",
+        "models/ernie4-5-moe.cpp",
         "models/eurobert.cpp",
         "models/exaone.cpp",
-        "models/exaone4.cpp",
         "models/exaone-moe.cpp",
-        "models/falcon-h1.cpp",
+        "models/exaone4.cpp",
         "models/falcon.cpp",
-        "models/gemma-embedding.cpp",
+        "models/falcon-h1.cpp",
         "models/gemma.cpp",
-        "models/gemma2-iswa.cpp",
+        "models/gemma-embedding.cpp",
+        "models/gemma2.cpp",
         "models/gemma3.cpp",
-        "models/gemma3n-iswa.cpp",
-        "models/gemma4-iswa.cpp",
-        "models/glm4-moe.cpp",
+        "models/gemma3n.cpp",
+        "models/gemma4.cpp",
+        "models/glm-dsa.cpp",
         "models/glm4.cpp",
+        "models/glm4-moe.cpp",
         "models/gpt2.cpp",
         "models/gptneox.cpp",
-        "models/granite-hybrid.cpp",
         "models/granite.cpp",
+        "models/granite-hybrid.cpp",
+        "models/granite-moe.cpp",
         "models/grok.cpp",
         "models/grovemoe.cpp",
         "models/hunyuan-dense.cpp",
         "models/hunyuan-moe.cpp",
+        "models/hunyuan-vl.cpp",
         "models/internlm2.cpp",
         "models/jais.cpp",
         "models/jais2.cpp",
         "models/jamba.cpp",
+        "models/jina-bert-v2.cpp",
+        "models/jina-bert-v3.cpp",
         "models/kimi-linear.cpp",
         "models/lfm2.cpp",
-        "models/llada-moe.cpp",
+        "models/lfm2moe.cpp",
         "models/llada.cpp",
+        "models/llada-moe.cpp",
         "models/llama.cpp",
+        "models/llama-embed.cpp",
         "models/llama4.cpp",
         "models/maincoder.cpp",
-        "models/mamba-base.cpp",
-        "models/mamba.cpp",
         "models/maincoder.cpp",
-        "models/mimo2-iswa.cpp",
+        "models/mamba.cpp",
+        "models/mamba-base.cpp",
+        "models/mamba2.cpp",
+        "models/mimo2.cpp",
+        "models/minicpm.cpp",
         "models/minicpm3.cpp",
         "models/minimax-m2.cpp",
         "models/mistral3.cpp",
+        "models/mistral4.cpp",
         "models/modern-bert.cpp",
         "models/mpt.cpp",
-        "models/nemotron-h.cpp",
         "models/nemotron.cpp",
+        "models/nemotron-h.cpp",
+        "models/nemotron-h-moe.cpp",
         "models/neo-bert.cpp",
+        "models/nomic-bert.cpp",
+        "models/nomic-bert-moe.cpp",
         "models/olmo.cpp",
         "models/olmo2.cpp",
         "models/olmoe.cpp",
-        "models/openai-moe-iswa.cpp",
+        "models/openai-moe.cpp",
         "models/openelm.cpp",
         "models/orion.cpp",
         "models/paddleocr.cpp",
-        "models/pangu-embedded.cpp",
+        "models/pangu-embed.cpp",
         "models/phi2.cpp",
         "models/phi3.cpp",
+        "models/phimoe.cpp",
         "models/plamo.cpp",
         "models/plamo2.cpp",
         "models/plamo3.cpp",
@@ -407,26 +440,26 @@ fn lib_llama(lib_path: &Path, ggml_objects: Vec<PathBuf>) {
         "models/qwen2moe.cpp",
         "models/qwen2vl.cpp",
         "models/qwen3.cpp",
+        "models/qwen3moe.cpp",
+        "models/qwen3next.cpp",
+        "models/qwen3vl.cpp",
+        "models/qwen3vlmoe.cpp",
         "models/qwen35.cpp",
         "models/qwen35moe.cpp",
-        "models/qwen3moe.cpp",
-        "models/qwen3vl-moe.cpp",
-        "models/qwen3vl.cpp",
-        "models/qwen3next.cpp",
         "models/refact.cpp",
         "models/rnd1.cpp",
-        "models/rwkv6-base.cpp",
         "models/rwkv6.cpp",
+        "models/rwkv6-base.cpp",
         "models/rwkv6qwen2.cpp",
-        "models/rwkv7-base.cpp",
         "models/rwkv7.cpp",
+        "models/rwkv7-base.cpp",
         "models/seed-oss.cpp",
         "models/smallthinker.cpp",
         "models/smollm3.cpp",
         "models/stablelm.cpp",
         "models/starcoder.cpp",
         "models/starcoder2.cpp",
-        "models/step35-iswa.cpp",
+        "models/step35.cpp",
         "models/t5.cpp",
         "models/t5encoder.cpp",
         "models/wavtokenizer-dec.cpp",
@@ -443,8 +476,11 @@ fn lib_llama(lib_path: &Path, ggml_objects: Vec<PathBuf>) {
     common.define("GGML_SCHED_MAX_COPIES", "4");
     common.define("GGML_SHARED", None);
     common.define("GGML_BUILD", None);
-    common.define("GGML_VERSION", "\"0.0.6458\"");
-    common.define("GGML_COMMIT", "\"40be5115\"");
+    common.define(
+        "GGML_VERSION",
+        Some(format!("\"{}\"", ggml_version()).as_str()),
+    );
+    common.define("GGML_COMMIT", GGML_COMMIT);
     common.define("ggml_base_EXPORTS", None);
 
     common.define("GGML_USE_CPU", None);
