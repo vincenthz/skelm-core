@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::Context;
 use clap::Parser;
-use skelm_exec::{ModelDescr, ModelParameters};
+use skelm_exec::{ModelDescr, ModelParameters, Tool};
 use skelm_ollama as ollama;
 use skelm_ollama::{OllamaConfig, OllamaStore};
 
@@ -40,8 +40,9 @@ async fn main() -> anyhow::Result<()> {
             no_prompt,
             system,
             input,
+            tools,
             output,
-        } => cmd_run(name, debug, model_path, no_prompt, system, input, output).await,
+        } => cmd_run(name, debug, model_path, no_prompt, system, input, tools, output).await,
         args::Commands::Info { name } => cmd_info(name).await,
         args::Commands::Bench { name, max_tokens } => cmd_bench(name, max_tokens).await,
         args::Commands::Embed { name } => cmd_embed(name).await,
@@ -89,29 +90,9 @@ async fn cmd_info(name: String) -> anyhow::Result<()> {
     let model = skelm_exec::Model::load(&model_descr)?;
 
     if let Some(chat_template) = model.model.chat_template() {
-        use skelm_exec::template::jinja;
-
         println!("chat-template:\n{}", chat_template);
-        let blocks = jinja::block(&chat_template)?;
-        let blocks = jinja::parse(&blocks).map_err(|e| anyhow::anyhow!("{}", e))?;
-        for block in blocks {
-            println!(
-                "{:?}-{:?} => {:?}",
-                block.start_pos, block.end_pos, block.content
-            );
-        }
-        /*
-        for block in blocks {
-            //println!("block: {:?}", block);
-            if block.block_type == jinja::BlockType::Statement {
-                let st = jinja::parse_statement(block.start_pos, block.content).unwrap();
-                println!("  {:?}", st)
-            } else if block.block_type == jinja::BlockType::Expression {
-                let st = jinja::parse_expression(block.start_pos, block.content).unwrap();
-                println!("  {:?}", st)
-            }
-        }
-        */
+        // The template-jinja block/parse debug dump is disabled while that crate
+        // is out of the build; restore it here when template-jinja is re-enabled.
     }
 
     Ok(())
@@ -209,6 +190,7 @@ async fn cmd_run(
     no_prompt: bool,
     system: Option<String>,
     input: Option<String>,
+    tools: Option<String>,
     output: Option<String>,
 ) -> anyhow::Result<()> {
     const DEFAULT_SYSTEM_PROMPT: &str = "you are a chatbot answering question";
@@ -238,6 +220,19 @@ async fn cmd_run(
         }
     };
 
+    let tools = if let Some(tools_file) = tools {
+        let data = std::fs::read_to_string(&tools_file)
+            .with_context(|| format!("reading tools file {}", tools_file))?;
+        serde_json::from_str::<Vec<Tool>>(&data).with_context(|| {
+            format!(
+                "parsing tools file {} (expected a JSON array of OpenAI function tool definitions)",
+                tools_file
+            )
+        })?
+    } else {
+        Vec::new()
+    };
+
     let system = system.unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
 
     if let Some(output) = &output {
@@ -252,7 +247,11 @@ async fn cmd_run(
 
     let model = skelm_exec::Model::load(&model_descr)?;
 
-    let parameters = ModelParameters { system, prompt };
+    let parameters = ModelParameters {
+        system,
+        prompt,
+        tools,
+    };
     let template = model.model_template_render(&parameters);
 
     let mut context = model.new_context();

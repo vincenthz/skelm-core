@@ -13,13 +13,16 @@ description = "Skelm abstraction for running language model in various mode"
 [dependencies]
 skelm-ollama.workspace = true
 skelm-llama-cpp.workspace = true
-template-jinja.workspace = true
+# template-jinja disabled for now, kept in tree for later use
+#template-jinja.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 chrono = "*"
 ctrlc = "3.5"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-minijinja = { version = "2" }
+# `json` enables the `tojson` filter that tool-aware chat templates rely on
+minijinja = { version = "2", features = ["json"] }
 minijinja-contrib = { version = "2", features = ["pycompat"] }
 smallvec = "1"
 

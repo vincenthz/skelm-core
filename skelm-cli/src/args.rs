@@ -62,6 +62,10 @@ pub enum Commands {
         /// User input file
         #[arg(long)]
         input: Option<String>,
+        /// JSON file with tool definitions (OpenAI function format) exposed to
+        /// the chat template's `tools` variable
+        #[arg(long)]
+        tools: Option<String>,
         /// Don't ask for a prompt
         #[arg(long, default_value_t = false)]
         no_prompt: bool,

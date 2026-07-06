@@ -18,8 +18,15 @@ members = [
     "crates/skelm-hf",
     "crates/skelm-exec",
     "crates/skelm-ollama",
-    "crates/template-jinja",
     "skelm-cli",
+]
+
+# template-jinja is a WIP hand-written Jinja engine, disabled for now but kept
+# in the tree for later use. Excluded from the build so its incomplete state
+# (failing tests / warnings) doesn't affect the workspace. Re-enable by moving
+# it back into `members` and restoring the dependency wiring in skelm-exec.
+exclude = [
+    "crates/template-jinja",
 ]
 
 resolver = "2"
@@ -30,7 +37,8 @@ skelm-exec = { version = "0.1", path = "crates/skelm-exec" }
 skelm-llama-cpp-sys = { version = "0.1", path = "crates/skelm-llama-cpp-sys" }
 skelm-llama-cpp = { version = "0.1", path = "crates/skelm-llama-cpp" }
 skelm-ollama = { version = "0.1", path = "crates/skelm-ollama" }
-template-jinja = { version = "0.1", path = "crates/template-jinja" }
+# template-jinja disabled for now (see [workspace].exclude above)
+#template-jinja = { version = "0.1", path = "crates/template-jinja" }
 
 #mlx-lm = { version = "0.0.1" }
 #mlx-lm-utils = { version = "0.0.1" }

@@ -11,7 +11,9 @@ use thiserror::Error;
 use skelm_llama_cpp::{self as llama, Vocab};
 use skelm_ollama as ollama;
 
-pub use template::chat_template;
+pub use template::{
+    Message, Tool, ToolCall, ToolCallFunction, ToolFunction, chat_template,
+};
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum ModelDescr {
@@ -98,20 +100,27 @@ impl Model {
 
     pub fn model_template_render(&self, parameters: &ModelParameters) -> String {
         match self.config.as_ref() {
-            ModelConfig::Ollama(_model_config) => {
-                implicit_model_template(self, &parameters.system, &parameters.prompt)
-            }
-            ModelConfig::Implicit => {
-                implicit_model_template(self, &parameters.system, &parameters.prompt)
-            }
+            ModelConfig::Ollama(_model_config) => implicit_model_template(
+                self,
+                &parameters.system,
+                &parameters.prompt,
+                &parameters.tools,
+            ),
+            ModelConfig::Implicit => implicit_model_template(
+                self,
+                &parameters.system,
+                &parameters.prompt,
+                &parameters.tools,
+            ),
         }
     }
 }
 
-fn implicit_model_template(model: &Model, system: &str, prompt: &str) -> String {
+fn implicit_model_template(model: &Model, system: &str, prompt: &str, tools: &[Tool]) -> String {
     if let Some(template) = model.model.chat_template() {
         //println!("template:\n{}", template);
-        match chat_template(&template, &system, &prompt) {
+        let messages = vec![Message::system(system), Message::user(prompt)];
+        match chat_template(&template, &messages, tools, true) {
             Err(e) => {
                 eprintln!("rendering chat template failed: {}", e);
                 eprintln!("chat template:");
@@ -133,6 +142,9 @@ fn implicit_model_template(model: &Model, system: &str, prompt: &str) -> String 
 pub struct ModelParameters {
     pub system: String,
     pub prompt: String,
+    /// Tool definitions exposed to the chat template's `tools` variable. Empty
+    /// when the model is run without tools.
+    pub tools: Vec<Tool>,
 }
 
 pub struct Context(pub Model, pub llama::Context);
