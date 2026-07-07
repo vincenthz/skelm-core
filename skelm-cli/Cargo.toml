@@ -8,6 +8,10 @@ keywords.workspace = true
 categories.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "skelm"
+path = "src/main.rs"
+
 [dependencies]
 skelm-download.workspace = true
 skelm-exec.workspace = true

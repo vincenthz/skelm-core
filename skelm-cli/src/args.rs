@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 
-/// Example CLI with subcommands: list, pull, verify
+/// skelm — manage and run local LLMs.
 #[derive(Parser, Debug)]
-#[command(name = "llmup")]
-#[command(about = "CLI tool to install and managed use LLM models", long_about = None)]
+#[command(name = "skelm")]
+#[command(about = "Manage and run local LLM models", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
