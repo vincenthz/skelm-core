@@ -2,12 +2,14 @@ use std::{
     path::PathBuf,
     process::exit,
     str::FromStr,
+    sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime},
 };
 
 use anyhow::Context;
 use clap::Parser;
-use skelm_exec::{ModelDescr, ModelParameters, Tool};
+use skelm_exec::{Message, ModelDescr, ModelParameters, Tool};
 use skelm_ollama as ollama;
 use skelm_ollama::{OllamaConfig, OllamaStore};
 
@@ -41,8 +43,24 @@ async fn main() -> anyhow::Result<()> {
             system,
             input,
             tools,
+            tool_exec,
+            max_tool_iters,
             output,
-        } => cmd_run(name, debug, model_path, no_prompt, system, input, tools, output).await,
+        } => {
+            cmd_run(
+                name,
+                debug,
+                model_path,
+                no_prompt,
+                system,
+                input,
+                tools,
+                tool_exec,
+                max_tool_iters,
+                output,
+            )
+            .await
+        }
         args::Commands::Info { name } => cmd_info(name).await,
         args::Commands::Bench { name, max_tokens } => cmd_bench(name, max_tokens).await,
         args::Commands::Embed { name } => cmd_embed(name).await,
@@ -191,6 +209,8 @@ async fn cmd_run(
     system: Option<String>,
     input: Option<String>,
     tools: Option<String>,
+    tool_exec: Option<String>,
+    max_tool_iters: usize,
     output: Option<String>,
 ) -> anyhow::Result<()> {
     const DEFAULT_SYSTEM_PROMPT: &str = "you are a chatbot answering question";
@@ -247,15 +267,67 @@ async fn cmd_run(
 
     let model = skelm_exec::Model::load(&model_descr)?;
 
-    let parameters = ModelParameters {
-        system,
-        prompt,
-        tools,
-    };
-    let template = model.model_template_render(&parameters);
+    let mut parameters = ModelParameters::single_turn(system, prompt);
+    parameters.tools = tools;
 
-    let mut context = model.new_context();
-    run::llama_run(&mut context, &template, &output)?;
+    // Ctrl-C aborts the current generation; set the handler once for the whole
+    // loop (ctrlc::set_handler errors if called more than once).
+    let quit = Arc::new(AtomicBool::new(false));
+    {
+        let quit = quit.clone();
+        ctrlc::set_handler(move || quit.store(true, Ordering::Relaxed))
+            .expect("Error setting Ctrl-C handler");
+    }
+
+    // Tool loop: render the transcript, generate a reply, and if the model
+    // emitted tool calls, execute them, append the results, and generate again.
+    for round in 0..max_tool_iters.max(1) {
+        let template = model.model_template_render(&parameters);
+        let mut context = model.new_context();
+        let reply = run::llama_generate(&mut context, &template, &output, &quit)?;
+
+        if quit.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let parsed = skelm_exec::parse_tool_calls(&reply);
+        if parsed.tool_calls.is_empty() {
+            // Final answer: already streamed by llama_generate.
+            return Ok(());
+        }
+
+        eprintln!("\n--- tool calls ({}) ---", parsed.tool_calls.len());
+        for call in &parsed.tool_calls {
+            let args = serde_json::to_string(&call.function.arguments)
+                .unwrap_or_else(|_| "<unserializable>".to_string());
+            eprintln!("{}({})", call.function.name, args);
+        }
+
+        let Some(tool_exec) = &tool_exec else {
+            eprintln!("(no --tool-exec set; not executing tool calls)");
+            return Ok(());
+        };
+
+        // Record the assistant's tool-call turn, then run each tool and append
+        // its result as a `tool` message for the next round.
+        parameters.messages.push(Message::assistant_tool_calls(
+            parsed.content,
+            parsed.tool_calls.clone(),
+        ));
+        for call in &parsed.tool_calls {
+            let result = run::run_tool(tool_exec, call)
+                .with_context(|| format!("executing tool {}", call.function.name))?;
+            eprintln!("-> {}: {}", call.function.name, result.trim());
+            parameters
+                .messages
+                .push(Message::tool(&call.function.name, result));
+        }
+
+        if round + 1 == max_tool_iters.max(1) {
+            eprintln!("reached max tool iterations ({})", max_tool_iters);
+        }
+    }
+
     Ok(())
 }
 

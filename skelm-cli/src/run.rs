@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::sync::Arc;
 use std::{path::Path, sync::atomic::AtomicBool};
 
 use skelm_llama_cpp as llama;
@@ -67,11 +68,16 @@ pub fn llama_sampler() -> impl llama::Sampler {
     sampler
 }
 
-pub fn llama_run(
+/// Feed `line` into `context`, generate until EOS (or Ctrl-C via `quit`),
+/// streaming the decoded output, and return the full generated text.
+pub fn llama_generate(
     context: &mut skelm_exec::Context,
     line: &str,
     output: &Option<String>,
-) -> anyhow::Result<()> {
+    quit: &Arc<AtomicBool>,
+) -> anyhow::Result<String> {
+    use std::sync::atomic::Ordering;
+
     let model = context.model().clone();
     let vocab = model.vocab;
 
@@ -81,34 +87,98 @@ pub fn llama_run(
 
     let mut sampler = llama_sampler();
 
-    let quit_requested = std::sync::Arc::new(AtomicBool::new(false));
-    let quit_requested_inner = quit_requested.clone();
-    ctrlc::set_handler(move || {
-        quit_requested_inner.store(true, std::sync::atomic::Ordering::Relaxed);
-    })
-    .expect("Error setting Ctrl-C handler");
-
     let mut output = output
         .as_ref()
         .map(|o| Output::new_file(o))
         .unwrap_or(Ok(Output::new()))?;
-    let mut tokens = Vec::new();
-    while !quit_requested.load(std::sync::atomic::Ordering::Relaxed) {
+    let mut generated: Vec<u8> = Vec::new();
+    while !quit.load(Ordering::Relaxed) {
         let n = context.next_token(&mut sampler, &vocab);
         match n {
             None => break,
             Some(t) => {
-                tokens.push(t);
                 context.append_tokens(&[t])?;
                 let attr = vocab.token_attr(t);
                 if attr.is_control() {
                     continue;
                 }
                 let bytes = vocab.as_bytes(t);
+                generated.extend_from_slice(&bytes);
                 output.append(&bytes);
             }
         }
     }
 
-    Ok(())
+    Ok(String::from_utf8_lossy(&generated).into_owned())
+}
+
+/// Execute a single tool call by invoking an external `program`: the call is
+/// written to its stdin as `{"name": ..., "arguments": {...}}` JSON, and its
+/// stdout is returned as the tool result.
+pub fn run_tool(program: &str, call: &skelm_exec::ToolCall) -> anyhow::Result<String> {
+    use anyhow::Context;
+    use std::process::{Command, Stdio};
+
+    let input = serde_json::json!({
+        "name": call.function.name,
+        "arguments": call.function.arguments,
+    })
+    .to_string();
+
+    let mut child = Command::new(program)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| format!("spawning tool executor '{}'", program))?;
+
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .context("tool executor stdin unavailable")?;
+        stdin.write_all(input.as_bytes())?;
+    } // drop stdin to signal EOF
+
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        anyhow::bail!("tool executor '{}' exited with {}", program, out.status);
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skelm_exec::{ToolCall, ToolCallFunction};
+
+    fn call() -> ToolCall {
+        ToolCall {
+            kind: "function".to_string(),
+            function: ToolCallFunction {
+                name: "get_weather".to_string(),
+                arguments: serde_json::json!({ "city": "Paris" }),
+            },
+        }
+    }
+
+    #[test]
+    fn run_tool_pipes_call_json_and_returns_stdout() {
+        // `cat` echoes the call JSON we write to stdin straight back to stdout.
+        let result = run_tool("cat", &call()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(value["name"], "get_weather");
+        assert_eq!(value["arguments"]["city"], "Paris");
+    }
+
+    #[test]
+    fn run_tool_reports_nonzero_exit() {
+        // `false` consumes stdin and exits 1.
+        assert!(run_tool("false", &call()).is_err());
+    }
+
+    #[test]
+    fn run_tool_missing_program_errors() {
+        assert!(run_tool("skelm-no-such-program", &call()).is_err());
+    }
 }

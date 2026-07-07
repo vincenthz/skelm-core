@@ -66,6 +66,13 @@ pub enum Commands {
         /// the chat template's `tools` variable
         #[arg(long)]
         tools: Option<String>,
+        /// Program that executes tool calls: receives `{"name","arguments"}`
+        /// JSON on stdin, returns the result on stdout. Enables the tool loop.
+        #[arg(long)]
+        tool_exec: Option<String>,
+        /// Maximum number of tool-call rounds before giving up
+        #[arg(long, default_value_t = 8)]
+        max_tool_iters: usize,
         /// Don't ask for a prompt
         #[arg(long, default_value_t = false)]
         no_prompt: bool,

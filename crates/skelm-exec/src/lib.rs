@@ -1,5 +1,6 @@
 mod output;
 pub mod template;
+mod toolparse;
 
 use std::hash::Hash;
 use std::path::PathBuf;
@@ -14,6 +15,7 @@ use skelm_ollama as ollama;
 pub use template::{
     Message, Tool, ToolCall, ToolCallFunction, ToolFunction, chat_template,
 };
+pub use toolparse::{ParsedOutput, parse_tool_calls};
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum ModelDescr {
@@ -100,34 +102,28 @@ impl Model {
 
     pub fn model_template_render(&self, parameters: &ModelParameters) -> String {
         match self.config.as_ref() {
-            ModelConfig::Ollama(_model_config) => implicit_model_template(
-                self,
-                &parameters.system,
-                &parameters.prompt,
-                &parameters.tools,
-            ),
-            ModelConfig::Implicit => implicit_model_template(
-                self,
-                &parameters.system,
-                &parameters.prompt,
-                &parameters.tools,
-            ),
+            ModelConfig::Ollama(_model_config) => implicit_model_template(self, parameters),
+            ModelConfig::Implicit => implicit_model_template(self, parameters),
         }
     }
 }
 
-fn implicit_model_template(model: &Model, system: &str, prompt: &str, tools: &[Tool]) -> String {
+fn implicit_model_template(model: &Model, parameters: &ModelParameters) -> String {
     if let Some(template) = model.model.chat_template() {
         //println!("template:\n{}", template);
-        let messages = vec![Message::system(system), Message::user(prompt)];
-        match chat_template(&template, &messages, tools, true) {
+        match chat_template(
+            &template,
+            &parameters.messages,
+            &parameters.tools,
+            parameters.add_generation_prompt,
+        ) {
             Err(e) => {
                 eprintln!("rendering chat template failed: {}", e);
                 eprintln!("chat template:");
                 for (i, l) in template.lines().enumerate() {
                     eprintln!("{:03} {}", i + 1, l)
                 }
-                prompt.to_string()
+                messages_fallback(&parameters.messages)
             }
             Ok(render) => {
                 //println!("rendered:\n{}", render);
@@ -135,16 +131,48 @@ fn implicit_model_template(model: &Model, system: &str, prompt: &str, tools: &[T
             }
         }
     } else {
-        prompt.to_string()
+        messages_fallback(&parameters.messages)
     }
 }
 
+/// Fallback prompt for models without a chat template (e.g. base models): the
+/// message contents concatenated in order.
+fn messages_fallback(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub struct ModelParameters {
-    pub system: String,
-    pub prompt: String,
+    /// The chat transcript rendered by the model's chat template, oldest first.
+    /// Drives multi-turn conversations and tool round-trips (append the
+    /// assistant's tool-call turn and the `tool` result turn, then re-render).
+    pub messages: Vec<Message>,
     /// Tool definitions exposed to the chat template's `tools` variable. Empty
     /// when the model is run without tools.
     pub tools: Vec<Tool>,
+    /// Whether to emit the trailing assistant header (the template's
+    /// `add_generation_prompt` variable). True when generating a reply.
+    pub add_generation_prompt: bool,
+}
+
+impl ModelParameters {
+    /// Build parameters from an explicit chat transcript. `tools` defaults to
+    /// empty and `add_generation_prompt` to true; set the fields to adjust.
+    pub fn new(messages: Vec<Message>) -> Self {
+        ModelParameters {
+            messages,
+            tools: Vec::new(),
+            add_generation_prompt: true,
+        }
+    }
+
+    /// Convenience for the common single-turn system + user request.
+    pub fn single_turn(system: impl Into<String>, prompt: impl Into<String>) -> Self {
+        ModelParameters::new(vec![Message::system(system), Message::user(prompt)])
+    }
 }
 
 pub struct Context(pub Model, pub llama::Context);
