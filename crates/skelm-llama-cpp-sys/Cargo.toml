@@ -17,5 +17,19 @@ bindgen = "0.72"
 cc = { version = "1.2", features = ["parallel"] }
 
 [features]
-defaults = []
+default = []
+
+# Metal is built automatically on Apple targets; this feature exists only to be
+# explicit and is a no-op elsewhere.
 metal = []
+
+# Accelerator backends. These are currently *detection only*: enabling one makes
+# build.rs auto-locate the corresponding toolkit and report it, but the backend
+# is not yet compiled — the build falls back to the CPU backend. See build.rs.
+cuda = []
+hip = []
+musa = []
+sycl = []
+vulkan = []
+opencl = []
+blas = []

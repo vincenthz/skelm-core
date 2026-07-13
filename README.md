@@ -40,9 +40,12 @@ Jinja chat templates shipped inside GGUF models, including **tool calling**.
 
 ## Installation
 
-llama.cpp is vendored as a git submodule and built from source, so you need a **C/C++
-toolchain**. On macOS install the Xcode command-line tools (`xcode-select --install`) —
-the Metal backend is compiled in automatically.
+llama.cpp is vendored as a git submodule and built from source (no `cmake` required —
+`crates/skelm-llama-cpp-sys/build.rs` replicates the relevant CMake detection and
+compilation), so you need a **C/C++ toolchain**. On macOS install the Xcode
+command-line tools (`xcode-select --install`) — the Metal backend is compiled in
+automatically. On Linux/Windows the CPU backend is built with the correct
+per-architecture sources and flags (x86, ARM, etc.).
 
 ```sh
 git clone --recursive https://github.com/vincenthz/skelm-core
@@ -53,6 +56,27 @@ git submodule update --init --recursive
 cargo install --path skelm-cli   # installs the `skelm` binary
 # ...or run without installing:
 cargo run --release -p skelm-cli -- <command>
+```
+
+### GPU / accelerator backends
+
+`skelm-llama-cpp-sys` exposes a cargo feature per accelerator backend
+(`cuda`, `hip`, `musa`, `sycl`, `vulkan`, `opencl`, `blas`). Enabling one makes the
+build script **auto-locate** the corresponding toolkit (via env vars like `CUDA_PATH`
+/ `VULKAN_SDK` / `ROCM_PATH`, tools on `PATH`, or standard install locations) and
+report what it found. Building these backends is **not yet implemented** — for now the
+build falls back to the CPU backend and prints a warning. If a toolkit is detected but
+its feature isn't enabled, the build prints a hint instead.
+
+```sh
+cargo build --features cuda        # detects CUDA, warns, falls back to CPU (for now)
+```
+
+The auto-selected CPU architecture flags default to `-march=native`. To pin a portable
+baseline for distributable builds, set `SKELM_LLAMA_CPU_FLAGS`:
+
+```sh
+SKELM_LLAMA_CPU_FLAGS="-march=x86-64-v3" cargo build --release
 ```
 
 ## Quickstart
