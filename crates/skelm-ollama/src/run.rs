@@ -81,14 +81,19 @@ pub fn model_config_get(model_descr: &ModelDescr) -> Result<ModelConfig, ModelCo
         None
     };
 
-    let Some(params_layer) = manifest.find_media_type(MEDIA_TYPE_IMAGE_PARAMS) else {
-        return Err(ModelConfigGetError::ParametersMissing(model_descr.clone()));
+    // The params layer is optional: not every model manifest ships one (e.g.
+    // qwen2.5:7b), and nothing in the generation path consumes it — the chat
+    // template comes from the GGUF. Default to null when absent rather than
+    // refusing to load the model.
+    let params_json = if let Some(params_layer) = manifest.find_media_type(MEDIA_TYPE_IMAGE_PARAMS) {
+        let params_data = store
+            .blob_read_string(&params_layer.digest)
+            .map_err(|e| ModelConfigGetError::ReadingParameterError(e, model_descr.clone()))?;
+        serde_json::Value::from_str(&params_data)
+            .map_err(|e| ModelConfigGetError::ParameterFileNotJson(e, model_descr.clone()))?
+    } else {
+        serde_json::Value::Null
     };
-    let params_data = store
-        .blob_read_string(&params_layer.digest)
-        .map_err(|e| ModelConfigGetError::ReadingParameterError(e, model_descr.clone()))?;
-    let params_json = serde_json::Value::from_str(&params_data)
-        .map_err(|e| ModelConfigGetError::ParameterFileNotJson(e, model_descr.clone()))?;
 
     /*
     let template = if let Some(template_data) = template_data {

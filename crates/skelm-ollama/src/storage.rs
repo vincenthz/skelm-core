@@ -2,7 +2,7 @@
 use std::{
     fmt::Display,
     fs::DirEntry,
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -309,7 +309,11 @@ impl OllamaStore {
 
     pub fn list_registries(&self) -> std::io::Result<Vec<Registry>> {
         let mut regs = Vec::new();
-        let dir = std::fs::read_dir(self.manifests_path())?;
+        let dir = match std::fs::read_dir(self.manifests_path()) {
+            Ok(dir) => dir,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(regs),
+            Err(e) => return Err(e),
+        };
         for d in dir {
             let Ok(name) = entry_read_dir_string(d, true) else {
                 continue;
@@ -455,6 +459,9 @@ impl OllamaStore {
 
         if path.exists() {
             return Ok(());
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
 
         let mut file = std::fs::File::create_new(path)?;
