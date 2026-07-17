@@ -1,3 +1,5 @@
+mod generate;
+pub mod orchestrator;
 mod output;
 pub mod template;
 mod toolparse;
@@ -12,6 +14,11 @@ use thiserror::Error;
 use skelm_llama_cpp::{self as llama, Vocab};
 use skelm_ollama as ollama;
 
+pub use generate::default_sampler;
+pub use orchestrator::{
+    AgentId, GenBackend, HostEvent, Limits, LlamaGenBackend, Orchestrator, PendingId, ToolKind,
+    ToolSpec,
+};
 pub use template::{
     Message, Tool, ToolCall, ToolCallFunction, ToolFunction, chat_template,
 };
@@ -145,6 +152,7 @@ fn messages_fallback(messages: &[Message]) -> String {
         .join("\n")
 }
 
+#[derive(Clone)]
 pub struct ModelParameters {
     /// The chat transcript rendered by the model's chat template, oldest first.
     /// Drives multi-turn conversations and tool round-trips (append the

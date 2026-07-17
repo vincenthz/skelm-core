@@ -79,6 +79,41 @@ pub enum Commands {
         #[arg(long)]
         output: Option<String>,
     },
+    /// Run a model as a multi-agent orchestrator: the model can fan work out to
+    /// sub-agents via the built-in `delegate` tool, under a step budget.
+    Orchestrate {
+        /// The name of the model to run
+        name: String,
+        /// Debug information
+        #[arg(long, default_value_t = false)]
+        debug: bool,
+        /// Use model path directly (no ollama)
+        #[arg(long, default_value_t = false)]
+        model_path: bool,
+        /// System prompt for the root agent
+        #[arg(long)]
+        system: Option<String>,
+        /// File holding the root task/prompt
+        #[arg(long)]
+        input: Option<String>,
+        /// JSON file with tool definitions (OpenAI function format) offered to
+        /// every agent alongside `delegate`
+        #[arg(long)]
+        tools: Option<String>,
+        /// Program that executes the `--tools` (same protocol as `run`): receives
+        /// `{"name","arguments"}` on stdin, returns the result on stdout
+        #[arg(long)]
+        tool_exec: Option<String>,
+        /// Total generation-step budget across all agents
+        #[arg(long, default_value_t = 16)]
+        max_steps: usize,
+        /// Maximum number of agents (including the root)
+        #[arg(long, default_value_t = 8)]
+        max_agents: usize,
+        /// Maximum delegation depth (root is depth 0)
+        #[arg(long, default_value_t = 3)]
+        max_depth: usize,
+    },
     /// Bench model generation
     Bench {
         /// The name of the model to run

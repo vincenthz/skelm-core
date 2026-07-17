@@ -59,13 +59,7 @@ pub fn llama_init_logging(debug: bool) {
 }
 
 pub fn llama_sampler() -> impl llama::Sampler {
-    let mut sampler = llama::SamplerChain::new();
-    sampler.add(Box::new(llama::SamplerMinP::new(0.05, 1)));
-    sampler.add(Box::new(llama::SamplerTemperature::new(0.8)));
-    sampler.add(Box::new(llama::SamplerDistance::new(0xFFFF_FFFF)));
-    //sampler.add(Box::new(llama::SamplerGreedy));
-
-    sampler
+    skelm_exec::default_sampler()
 }
 
 /// Feed `line` into `context`, generate until EOS (or Ctrl-C via `quit`),
@@ -76,40 +70,11 @@ pub fn llama_generate(
     output: &Option<String>,
     quit: &Arc<AtomicBool>,
 ) -> anyhow::Result<String> {
-    use std::sync::atomic::Ordering;
-
-    let model = context.model().clone();
-    let vocab = model.vocab;
-
-    context.append_bytes(line.as_bytes());
-
-    let context = &mut context.1;
-
-    let mut sampler = llama_sampler();
-
-    let mut output = output
+    let mut out = output
         .as_ref()
         .map(|o| Output::new_file(o))
         .unwrap_or(Ok(Output::new()))?;
-    let mut generated: Vec<u8> = Vec::new();
-    while !quit.load(Ordering::Relaxed) {
-        let n = context.next_token(&mut sampler, &vocab);
-        match n {
-            None => break,
-            Some(t) => {
-                context.append_tokens(&[t])?;
-                let attr = vocab.token_attr(t);
-                if attr.is_control() {
-                    continue;
-                }
-                let bytes = vocab.as_bytes(t);
-                generated.extend_from_slice(&bytes);
-                output.append(&bytes);
-            }
-        }
-    }
-
-    Ok(String::from_utf8_lossy(&generated).into_owned())
+    context.generate(line, quit, |bytes| out.append(bytes))
 }
 
 /// Execute a single tool call by invoking an external `program`: the call is

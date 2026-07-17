@@ -170,8 +170,28 @@ fn parse_llama(output: &str) -> Option<(Vec<ToolCall>, String)> {
 }
 
 fn tool_call_from_str(s: &str) -> Option<ToolCall> {
-    let value: Value = serde_json::from_str(s.trim()).ok()?;
+    let s = s.trim();
+    // Some chat templates (notably several Qwen2.5 GGUFs) print the tool-call
+    // example with doubled braces — `{{"name": ...}}` — so the model dutifully
+    // emits doubled braces, which is invalid JSON. Fall back to stripping one
+    // outer brace layer, the same leniency llama.cpp applies.
+    let value: Value = serde_json::from_str(s)
+        .or_else(|_| serde_json::from_str(&undouble_outer_braces(s)))
+        .ok()?;
     tool_call_from_json(&value)
+}
+
+/// If `s` is wrapped in a redundant extra `{{ … }}` brace layer, strip one level.
+/// A well-formed JSON object never starts with `{{`, so this only ever rescues
+/// the malformed doubled-brace form.
+fn undouble_outer_braces(s: &str) -> String {
+    let t = s.trim();
+    if t.len() >= 4 && t.starts_with("{{") && t.ends_with("}}") {
+        // The braces are ASCII, so these byte indices are char boundaries.
+        t[1..t.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
 }
 
 /// Build a [`ToolCall`] from a `{"name": ..., "arguments"|"parameters": ...}`
@@ -228,6 +248,17 @@ mod tests {
         assert_eq!(parsed.tool_calls[0].function.name, "a");
         assert_eq!(parsed.tool_calls[1].function.name, "b");
         assert_eq!(args(&parsed.tool_calls[1])["x"], 1);
+    }
+
+    #[test]
+    fn hermes_doubled_outer_braces() {
+        // Several Qwen2.5 GGUF templates render the example with doubled braces,
+        // so the model emits `{{ ... }}`; we must still recover the call.
+        let out = "<tool_call>\n{{\"name\": \"delegate\", \"arguments\": {\"task\": \"do it\"}}}\n</tool_call>";
+        let parsed = parse_tool_calls(out);
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].function.name, "delegate");
+        assert_eq!(args(&parsed.tool_calls[0])["task"], "do it");
     }
 
     #[test]

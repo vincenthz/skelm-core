@@ -9,7 +9,10 @@ use std::{
 
 use anyhow::Context;
 use clap::Parser;
-use skelm_exec::{Message, ModelDescr, ModelParameters, Tool};
+use skelm_exec::{
+    HostEvent, Limits, LlamaGenBackend, Message, ModelDescr, ModelParameters, Orchestrator, Tool,
+    ToolSpec,
+};
 use skelm_ollama as ollama;
 use skelm_ollama::{OllamaConfig, OllamaStore};
 
@@ -58,6 +61,24 @@ async fn main() -> anyhow::Result<()> {
                 tool_exec,
                 max_tool_iters,
                 output,
+            )
+            .await
+        }
+        args::Commands::Orchestrate {
+            name,
+            debug,
+            model_path,
+            system,
+            input,
+            tools,
+            tool_exec,
+            max_steps,
+            max_agents,
+            max_depth,
+        } => {
+            cmd_orchestrate(
+                name, debug, model_path, system, input, tools, tool_exec, max_steps, max_agents,
+                max_depth,
             )
             .await
         }
@@ -328,6 +349,114 @@ async fn cmd_run(
         }
     }
 
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_orchestrate(
+    name: String,
+    debug: bool,
+    model_path: bool,
+    system: Option<String>,
+    input: Option<String>,
+    tools: Option<String>,
+    tool_exec: Option<String>,
+    max_steps: usize,
+    max_agents: usize,
+    max_depth: usize,
+) -> anyhow::Result<()> {
+    const DEFAULT_SYSTEM_PROMPT: &str = "You are an orchestrator. Break the task into \
+        self-contained pieces and use the `delegate` tool to hand each to a specialist \
+        sub-agent, then synthesize their answers into a final response.";
+
+    let model_descr = if model_path {
+        ModelDescr::Path(PathBuf::from(name))
+    } else {
+        ModelDescr::Ollama(ollama::ModelDescr::from_str(&name).unwrap())
+    };
+
+    let prompt = if let Some(input_file) = input {
+        std::fs::read_to_string(&input_file)
+            .with_context(|| format!("reading input file {}", input_file))?
+    } else {
+        let mut rl = rustyline::DefaultEditor::new()?;
+        match rl.readline(">> ") {
+            Err(e) => anyhow::bail!("error {:?}", e),
+            Ok(line) => line,
+        }
+    };
+
+    // Host tools: each definition in --tools is exposed to every agent and, when a
+    // --tool-exec program is given, run through it (same protocol as `run`).
+    let mut specs: Vec<ToolSpec> = Vec::new();
+    if let Some(tools_file) = tools {
+        let data = std::fs::read_to_string(&tools_file)
+            .with_context(|| format!("reading tools file {}", tools_file))?;
+        let defs = serde_json::from_str::<Vec<Tool>>(&data).with_context(|| {
+            format!(
+                "parsing tools file {} (expected a JSON array of OpenAI function tool definitions)",
+                tools_file
+            )
+        })?;
+        match &tool_exec {
+            Some(exec) => {
+                for def in defs {
+                    let exec = exec.clone();
+                    specs.push(ToolSpec::sync(def, move |call| run::run_tool(&exec, call)));
+                }
+            }
+            None => eprintln!("warning: --tools given without --tool-exec; ignoring host tools"),
+        }
+    }
+
+    // A built-in human-in-the-loop tool, resolved from stdin.
+    specs.push(ToolSpec::deferred(Tool::function(
+        "ask_human",
+        Some("Ask the human operator a question and wait for their typed answer.".to_string()),
+        serde_json::json!({
+            "type": "object",
+            "properties": { "question": { "type": "string" } },
+            "required": ["question"]
+        }),
+    )));
+
+    run::llama_init_logging(debug);
+    tracing_subscriber::fmt::init();
+
+    let model = skelm_exec::Model::load(&model_descr)?;
+    let limits = Limits {
+        budget_steps: max_steps,
+        max_agents,
+        max_depth,
+        ..Limits::default()
+    };
+    let orch = Orchestrator::spawn(LlamaGenBackend::new(model), specs, limits);
+
+    let system = system.unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
+    orch.submit_root(ModelParameters::single_turn(system, prompt));
+
+    // Drive the run: answer deferred (human) tool requests from stdin, print the
+    // final answer when the root finishes.
+    loop {
+        match orch.recv() {
+            Some(HostEvent::NeedInput { pending, tool, args }) => {
+                eprintln!("\n[{}] {}", tool, args);
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                orch.fulfill(pending, line.trim().to_string());
+            }
+            Some(HostEvent::Finished { result, truncated }) => {
+                if truncated {
+                    eprintln!("\n(stopped by a limit before completion)");
+                }
+                println!("{}", result);
+                break;
+            }
+            None => break,
+        }
+    }
+
+    orch.join();
     Ok(())
 }
 
