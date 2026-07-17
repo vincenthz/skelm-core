@@ -28,19 +28,18 @@ pub trait DataUpdatable {
         file: &mut tokio::fs::File,
     ) -> impl Future<Output = std::io::Result<()>> {
         async {
-            let mut buf = vec![0; 16384];
+            // NOTE: use `read` (fills the slice, returns the count) rather than
+            // `read_buf` (which appends into a `Vec`'s spare capacity). With a
+            // pre-sized `vec![0; N]`, `read_buf` would leave the read bytes at the
+            // end while `buf[0..n]` still pointed at the leading zeros — feeding
+            // garbage to the hash and corrupting the digest of any resumed download.
+            let mut buf = vec![0u8; 16384];
             loop {
-                match file.read_buf(&mut buf).await {
-                    Ok(n) => {
-                        if n == 0 {
-                            break;
-                        }
-                        self.ctx_update(&buf[0..n]);
-                    }
-                    Err(e) => {
-                        panic!("issue : {}", e);
-                    }
+                let n = file.read(&mut buf).await?;
+                if n == 0 {
+                    break;
                 }
+                self.ctx_update(&buf[0..n]);
             }
             Ok(())
         }
@@ -72,5 +71,47 @@ impl DataUpdatable for ollama::BlobContext {
 
     fn ctx_update(&mut self, data: &[u8]) {
         self.update(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ollama::BlobContext;
+
+    /// Resuming an interrupted download must produce the same digest as hashing
+    /// the whole file in one pass: the already-downloaded bytes are replayed
+    /// through `ctx_update_read_file`, then the remainder is streamed in.
+    #[tokio::test]
+    async fn resume_hash_matches_full_hash() {
+        // Partial deliberately exceeds the 16 KiB read buffer to exercise the
+        // multi-read loop where the old bug corrupted the state.
+        let partial = b"the quick brown fox ".repeat(2000); // 40_000 bytes
+        let remainder = b"jumps over the lazy dog ".repeat(500);
+        let mut full = partial.clone();
+        full.extend_from_slice(&remainder);
+
+        // Expected: hash the whole content in one go.
+        let mut whole = BlobContext::new_sha256();
+        whole.update(&full);
+        let expected = whole.finalize();
+
+        // Simulate resume: partial bytes are on disk; replay them, then feed the
+        // remainder exactly as the download stream would.
+        let path =
+            std::env::temp_dir().join(format!("skelm-resume-test-{}.bin", std::process::id()));
+        tokio::fs::write(&path, &partial).await.unwrap();
+        let mut file = tokio::fs::File::open(&path).await.unwrap();
+
+        let mut resumed = BlobContext::new_sha256();
+        resumed.ctx_update_read_file(&mut file).await.unwrap();
+        resumed.update(&remainder);
+        let resumed = resumed.finalize();
+
+        let _ = tokio::fs::remove_file(&path).await;
+        assert!(
+            resumed == expected,
+            "resumed digest {resumed} != whole-file digest {expected}"
+        );
     }
 }
