@@ -23,18 +23,127 @@ impl Drop for ContextPtr {
     }
 }
 
+/// When to enable Flash Attention
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlashAttn {
+    /// let llama.cpp decide based on the model and devices
+    Auto,
+    Disabled,
+    Enabled,
+}
+
+impl FlashAttn {
+    fn to_c(self) -> llama::llama_flash_attn_type {
+        match self {
+            FlashAttn::Auto => llama::llama_flash_attn_type::LLAMA_FLASH_ATTN_TYPE_AUTO,
+            FlashAttn::Disabled => llama::llama_flash_attn_type::LLAMA_FLASH_ATTN_TYPE_DISABLED,
+            FlashAttn::Enabled => llama::llama_flash_attn_type::LLAMA_FLASH_ATTN_TYPE_ENABLED,
+        }
+    }
+
+    fn from_c(value: llama::llama_flash_attn_type) -> Self {
+        match value {
+            llama::llama_flash_attn_type::LLAMA_FLASH_ATTN_TYPE_DISABLED => FlashAttn::Disabled,
+            llama::llama_flash_attn_type::LLAMA_FLASH_ATTN_TYPE_ENABLED => FlashAttn::Enabled,
+            _ => FlashAttn::Auto,
+        }
+    }
+}
+
+/// Data type of the K / V cache (the types llama.cpp's own tools accept)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheType {
+    F32,
+    F16,
+    BF16,
+    Q8_0,
+    Q4_0,
+    Q4_1,
+    #[allow(non_camel_case_types)]
+    IQ4_NL,
+    Q5_0,
+    Q5_1,
+}
+
+impl CacheType {
+    fn to_c(self) -> llama::ggml_type {
+        match self {
+            CacheType::F32 => llama::ggml_type::GGML_TYPE_F32,
+            CacheType::F16 => llama::ggml_type::GGML_TYPE_F16,
+            CacheType::BF16 => llama::ggml_type::GGML_TYPE_BF16,
+            CacheType::Q8_0 => llama::ggml_type::GGML_TYPE_Q8_0,
+            CacheType::Q4_0 => llama::ggml_type::GGML_TYPE_Q4_0,
+            CacheType::Q4_1 => llama::ggml_type::GGML_TYPE_Q4_1,
+            CacheType::IQ4_NL => llama::ggml_type::GGML_TYPE_IQ4_NL,
+            CacheType::Q5_0 => llama::ggml_type::GGML_TYPE_Q5_0,
+            CacheType::Q5_1 => llama::ggml_type::GGML_TYPE_Q5_1,
+        }
+    }
+
+    fn from_c(value: llama::ggml_type) -> Self {
+        match value {
+            llama::ggml_type::GGML_TYPE_F32 => CacheType::F32,
+            llama::ggml_type::GGML_TYPE_BF16 => CacheType::BF16,
+            llama::ggml_type::GGML_TYPE_Q8_0 => CacheType::Q8_0,
+            llama::ggml_type::GGML_TYPE_Q4_0 => CacheType::Q4_0,
+            llama::ggml_type::GGML_TYPE_Q4_1 => CacheType::Q4_1,
+            llama::ggml_type::GGML_TYPE_IQ4_NL => CacheType::IQ4_NL,
+            llama::ggml_type::GGML_TYPE_Q5_0 => CacheType::Q5_0,
+            llama::ggml_type::GGML_TYPE_Q5_1 => CacheType::Q5_1,
+            _ => CacheType::F16,
+        }
+    }
+}
+
+/// Context creation parameters; `Default` uses the llama.cpp defaults, except
+/// for a 16384 tokens context
+#[derive(Clone, Debug)]
 pub struct ContextParams {
+    /// text context size, 0 = from model
     pub n_ctx: u32,
+    /// logical maximum batch size that can be submitted to decode
+    pub n_batch: u32,
+    /// physical maximum batch size
+    pub n_ubatch: u32,
+    /// max number of sequences (i.e. distinct states for recurrent models)
+    pub n_seq_max: u32,
+    /// number of threads to use for generation
+    pub n_threads: i32,
+    /// number of threads to use for batch (prompt) processing
+    pub n_threads_batch: i32,
+    /// extract embeddings (together with logits)
     pub embeddings: bool,
+    /// when to enable Flash Attention
+    pub flash_attn: FlashAttn,
+    /// data type for the K cache
+    pub type_k: CacheType,
+    /// data type for the V cache
+    pub type_v: CacheType,
+    /// offload the KQV ops (including the KV cache) to GPU
+    pub offload_kqv: bool,
+    /// offload host tensor operations to device
+    pub op_offload: bool,
+    /// device cache in bytes for the MoE experts kept in host memory, 0 = disabled
+    pub moe_cache_size: usize,
 }
 
 impl Default for ContextParams {
     fn default() -> Self {
-        let mut context = unsafe { llama::llama_context_default_params() };
-        context.n_ctx = 16384;
+        let context = unsafe { llama::llama_context_default_params() };
         Self {
-            n_ctx: context.n_ctx,
+            n_ctx: 16384,
+            n_batch: context.n_batch,
+            n_ubatch: context.n_ubatch,
+            n_seq_max: context.n_seq_max,
+            n_threads: context.n_threads,
+            n_threads_batch: context.n_threads_batch,
             embeddings: context.embeddings,
+            flash_attn: FlashAttn::from_c(context.flash_attn_type),
+            type_k: CacheType::from_c(context.type_k),
+            type_v: CacheType::from_c(context.type_v),
+            offload_kqv: context.offload_kqv,
+            op_offload: context.op_offload,
+            moe_cache_size: context.moe_cache_size,
         }
     }
 }
@@ -43,7 +152,18 @@ impl ContextParams {
     fn as_c(&self) -> llama::llama_context_params {
         let mut context = unsafe { llama::llama_context_default_params() };
         context.n_ctx = self.n_ctx;
+        context.n_batch = self.n_batch;
+        context.n_ubatch = self.n_ubatch;
+        context.n_seq_max = self.n_seq_max;
+        context.n_threads = self.n_threads;
+        context.n_threads_batch = self.n_threads_batch;
         context.embeddings = self.embeddings;
+        context.flash_attn_type = self.flash_attn.to_c();
+        context.type_k = self.type_k.to_c();
+        context.type_v = self.type_v.to_c();
+        context.offload_kqv = self.offload_kqv;
+        context.op_offload = self.op_offload;
+        context.moe_cache_size = self.moe_cache_size;
         context
     }
 }
@@ -252,6 +372,44 @@ impl Context {
             }
 
             Ok(core::slice::from_raw_parts(embedding, n_embd))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_params_round_trip() {
+        let c = unsafe { llama::llama_context_default_params() };
+        let params = ContextParams::default();
+        let back = params.as_c();
+        assert_eq!(back.n_ctx, 16384);
+        assert_eq!(back.n_batch, c.n_batch);
+        assert_eq!(back.n_ubatch, c.n_ubatch);
+        assert_eq!(back.n_threads, c.n_threads);
+        assert_eq!(back.flash_attn_type, c.flash_attn_type);
+        assert_eq!(back.type_k, c.type_k);
+        assert_eq!(back.type_v, c.type_v);
+        assert_eq!(back.offload_kqv, c.offload_kqv);
+        assert_eq!(back.moe_cache_size, c.moe_cache_size);
+    }
+
+    #[test]
+    fn cache_type_round_trip() {
+        for ty in [
+            CacheType::F32,
+            CacheType::F16,
+            CacheType::BF16,
+            CacheType::Q8_0,
+            CacheType::Q4_0,
+            CacheType::Q4_1,
+            CacheType::IQ4_NL,
+            CacheType::Q5_0,
+            CacheType::Q5_1,
+        ] {
+            assert_eq!(CacheType::from_c(ty.to_c()), ty);
         }
     }
 }

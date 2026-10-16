@@ -15,6 +15,7 @@ use skelm_llama_cpp::{self as llama, Vocab};
 use skelm_ollama as ollama;
 
 pub use generate::default_sampler;
+pub use llama::{CacheType, ContextParams, FlashAttn, LoadMode, ModelParams, SplitMode};
 pub use orchestrator::{
     AgentId, GenBackend, HostEvent, Limits, LlamaGenBackend, Orchestrator, PendingId, ToolKind,
     ToolSpec,
@@ -51,6 +52,13 @@ pub enum ModelLoadError {
 
 impl Model {
     pub fn load(descr: &ModelDescr) -> Result<Self, ModelLoadError> {
+        Self::load_with_params(descr, &llama::ModelParams::default())
+    }
+
+    pub fn load_with_params(
+        descr: &ModelDescr,
+        params: &llama::ModelParams,
+    ) -> Result<Self, ModelLoadError> {
         let (config, model_path) = match descr {
             ModelDescr::Ollama(model_descr) => {
                 let config = ollama::model_config_get(model_descr)?;
@@ -59,8 +67,7 @@ impl Model {
             }
             ModelDescr::Path(path_buf) => (ModelConfig::Implicit, path_buf.clone()),
         };
-        let params = llama::ModelParams::default();
-        llama::Model::load(model_path, &params)
+        llama::Model::load(model_path, params)
             .map_err(ModelLoadError::LlamaModelFailedLoading)
             .map(|m| Model {
                 vocab: m.vocab(),
@@ -78,7 +85,10 @@ impl Model {
             }
             ModelDescr::Path(path_buf) => (ModelConfig::Implicit, path_buf.clone()),
         };
-        let params = llama::ModelParams { vocab_only: true };
+        let params = llama::ModelParams {
+            vocab_only: true,
+            ..llama::ModelParams::default()
+        };
         let model = llama::Model::load(model_path, &params)
             .map_err(ModelLoadError::LlamaModelFailedLoading)
             .map(|m| Model {
@@ -90,17 +100,25 @@ impl Model {
     }
 
     pub fn new_context(&self) -> Context {
-        let params = llama::ContextParams::default();
-        Context(self.clone(), self.model.new_context(&params).unwrap())
+        self.new_context_with_params(&llama::ContextParams::default())
+    }
+
+    pub fn new_context_with_params(&self, params: &llama::ContextParams) -> Context {
+        Context(self.clone(), self.model.new_context(params).unwrap())
     }
 
     pub fn new_context_embeddings(&self) -> Context {
+        self.new_context_embeddings_with_params(&llama::ContextParams::default())
+    }
+
+    /// Create an embeddings context; `params.embeddings` is forced on
+    pub fn new_context_embeddings_with_params(&self, params: &llama::ContextParams) -> Context {
         if self.model.has_encoder() && self.model.has_decoder() {
             panic!("cannot generate embeddings in models with encoder-decoder")
         }
         let params = llama::ContextParams {
             embeddings: true,
-            ..llama::ContextParams::default()
+            ..params.clone()
         };
         Context(self.clone(), self.model.new_context(&params).unwrap())
     }

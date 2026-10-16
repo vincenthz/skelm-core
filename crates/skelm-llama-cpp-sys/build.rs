@@ -9,10 +9,14 @@
 //!   * the CPU backend, with per-architecture source selection and flags
 //!     (mirrors `ggml/src/ggml-cpu/CMakeLists.txt`)
 //!   * the Metal backend on macOS (mirrors `ggml/src/ggml-metal`)
+//!   * Accelerate in the CPU backend on Apple (mirrors `GGML_ACCELERATE`)
+//!   * the BLAS backend (mirrors `ggml/src/ggml-blas`): Accelerate on Apple,
+//!     where it is on by default like upstream, and OpenBLAS elsewhere with the
+//!     `blas` feature
 //!
 //! What is detected but not (yet) built: the accelerator backends that require
 //! a vendor toolchain we cannot drive from `cc` alone — CUDA (`nvcc`), HIP,
-//! MUSA, SYCL, Vulkan (shader codegen), OpenCL and BLAS. When one of these is
+//! MUSA, SYCL, Vulkan (shader codegen) and OpenCL. When one of these is
 //! requested via its cargo feature we auto-locate the toolkit, emit a warning
 //! that building it is not implemented, and fall back to the CPU backend. When
 //! a toolkit is found on the system but not requested we print a hint.
@@ -21,6 +25,10 @@
 //!   * `SKELM_LLAMA_CPU_FLAGS` — space separated list that fully replaces the
 //!     auto-selected CPU architecture flags (e.g. `-march=x86-64-v3`). Useful
 //!     for portable/distributable builds where `-march=native` is undesirable.
+//!   * `SKELM_LLAMA_BLAS_VENDOR` — `Apple` (default on Apple), `OpenBLAS`
+//!     (default elsewhere) or `none` to disable the BLAS backend.
+//!   * `OPENBLAS_PATH` — OpenBLAS install prefix (with `include/` and `lib/`),
+//!     tried before `pkg-config` and the usual system locations.
 
 use std::{
     env,
@@ -123,6 +131,22 @@ fn os_defines(b: &mut Build, target: &Target) {
     }
     if target.os == "windows" {
         b.define("_CRT_SECURE_NO_WARNINGS", None);
+    }
+}
+
+/// MSVC options that upstream sets on every target (top-level and
+/// `ggml/CMakeLists.txt`): sources are UTF-8, `llama-model.cpp` and friends
+/// exceed the default COFF section limit, and the noisy conversion /
+/// redefinition warnings are silenced.
+fn msvc_options(b: &mut Build, target: &Target) {
+    if !target.is_msvc() {
+        return;
+    }
+    for flag in [
+        "/utf-8", "/bigobj", "/wd4005", "/wd4244", "/wd4267", "/wd4305", "/wd4566", "/wd4996",
+        "/wd4702",
+    ] {
+        b.flag(flag);
     }
 }
 
@@ -280,13 +304,14 @@ fn main() {
         "VULKAN_SDK",
         "OPENBLAS_PATH",
         "MKLROOT",
+        "SKELM_LLAMA_BLAS_VENDOR",
     ] {
         println!("cargo:rerun-if-env-changed={var}");
     }
 
     // Report which accelerator backends were requested / detected and decide
-    // whether we can build one. Anything other than CPU/Metal currently falls
-    // back to CPU.
+    // whether we can build one. Anything other than CPU/Metal/BLAS currently
+    // falls back to CPU.
     report_backends(&target);
 
     bindings(&lib_path, &out_path);
@@ -294,8 +319,9 @@ fn main() {
 
     // Metal is the one GPU backend we actually build, and only on Apple.
     let use_metal = target.is_macos() && metal_wanted(&target);
+    let blas = blas_config(&target);
 
-    let ggml_objects = lib_ggml(&lib_path, &out_path, &target, use_metal);
+    let ggml_objects = lib_ggml(&lib_path, &out_path, &target, use_metal, blas.as_ref());
     lib_llama(&lib_path, &out_path, &target, ggml_objects);
 }
 
@@ -311,18 +337,16 @@ enum Gpu {
     Sycl,
     Vulkan,
     OpenCL,
-    Blas,
 }
 
 impl Gpu {
-    const ALL: [Gpu; 7] = [
+    const ALL: [Gpu; 6] = [
         Gpu::Cuda,
         Gpu::Hip,
         Gpu::Musa,
         Gpu::Sycl,
         Gpu::Vulkan,
         Gpu::OpenCL,
-        Gpu::Blas,
     ];
 
     fn feature(self) -> &'static str {
@@ -333,7 +357,6 @@ impl Gpu {
             Gpu::Sycl => "sycl",
             Gpu::Vulkan => "vulkan",
             Gpu::OpenCL => "opencl",
-            Gpu::Blas => "blas",
         }
     }
 
@@ -345,14 +368,13 @@ impl Gpu {
             Gpu::Sycl => "SYCL/oneAPI",
             Gpu::Vulkan => "Vulkan",
             Gpu::OpenCL => "OpenCL",
-            Gpu::Blas => "BLAS",
         }
     }
 
     /// Try to locate the toolkit/SDK for this backend, returning a short human
     /// readable description of where it was found. Mirrors the corresponding
     /// CMake `find_package(...)` at a best-effort level.
-    fn detect(self, target: &Target) -> Option<String> {
+    fn detect(self) -> Option<String> {
         match self {
             Gpu::Cuda => detect_cuda(),
             Gpu::Hip => detect_hip(),
@@ -360,7 +382,6 @@ impl Gpu {
             Gpu::Sycl => detect_sycl(),
             Gpu::Vulkan => detect_vulkan(),
             Gpu::OpenCL => detect_opencl(),
-            Gpu::Blas => detect_blas(target),
         }
     }
 }
@@ -377,7 +398,7 @@ fn report_backends(target: &Target) {
 
     for gpu in Gpu::ALL {
         let requested = feature_enabled(gpu.feature());
-        let found = gpu.detect(target);
+        let found = gpu.detect();
         match (requested, &found) {
             (true, Some(loc)) => warn(format!(
                 "{name} backend requested (feature `{feat}`); toolkit detected at {loc}. \
@@ -514,21 +535,195 @@ fn detect_opencl() -> Option<String> {
     })
 }
 
-fn detect_blas(target: &Target) -> Option<String> {
-    if target.is_apple() {
-        // The Accelerate framework ships with macOS (GGML_BLAS_VENDOR "Apple").
-        return Some("Accelerate framework".to_string());
+// ---------------------------------------------------------------------------
+// BLAS backend configuration (mirrors ggml/src/ggml-blas/CMakeLists.txt)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlasVendor {
+    /// the Accelerate framework (GGML_BLAS_VENDOR "Apple")
+    Apple,
+    OpenBlas,
+}
+
+struct BlasConfig {
+    vendor: BlasVendor,
+    /// include directories for `ggml-blas.cpp` (to find `cblas.h`)
+    include_dirs: Vec<PathBuf>,
+    /// extra preprocessor defines (from `pkg-config --cflags`)
+    defines: Vec<(String, Option<String>)>,
+    /// native library search directories
+    link_dirs: Vec<PathBuf>,
+    /// libraries to link
+    libs: Vec<String>,
+}
+
+impl BlasConfig {
+    fn new(vendor: BlasVendor) -> Self {
+        BlasConfig {
+            vendor,
+            include_dirs: vec![],
+            defines: vec![],
+            link_dirs: vec![],
+            libs: vec![],
+        }
     }
-    env_dir("OPENBLAS_PATH")
-        .or_else(|| env_dir("MKLROOT"))
-        .or_else(|| {
-            first_existing(&[
-                "/usr/lib/x86_64-linux-gnu/libopenblas.so",
-                "/usr/lib/libopenblas.so",
-                "/usr/local/lib/libopenblas.so",
-                "/usr/lib64/libopenblas.so",
-            ])
-        })
+}
+
+/// Decide whether to build the BLAS backend and with which vendor.
+///
+/// Like upstream (`GGML_BLAS_DEFAULT`), it is on by default on Apple with
+/// Accelerate; elsewhere it requires the `blas` feature and an OpenBLAS
+/// install. `SKELM_LLAMA_BLAS_VENDOR` overrides the vendor or disables it.
+fn blas_config(target: &Target) -> Option<BlasConfig> {
+    let vendor = match env::var("SKELM_LLAMA_BLAS_VENDOR").ok().as_deref() {
+        Some(v) if v.eq_ignore_ascii_case("none") => return None,
+        Some(v) if v.eq_ignore_ascii_case("apple") => BlasVendor::Apple,
+        Some(v) if v.eq_ignore_ascii_case("openblas") => BlasVendor::OpenBlas,
+        Some(v) => panic!(
+            "unsupported SKELM_LLAMA_BLAS_VENDOR `{v}` (expected `Apple`, `OpenBLAS` or `none`)"
+        ),
+        None if target.is_apple() => BlasVendor::Apple,
+        None => BlasVendor::OpenBlas,
+    };
+
+    if !target.is_apple() && !feature_enabled("blas") {
+        if let Some((_, loc)) = find_openblas(target) {
+            warn(format!(
+                "detected OpenBLAS ({loc}) — enable the BLAS backend with `--features blas`"
+            ));
+        }
+        return None;
+    }
+
+    match vendor {
+        BlasVendor::Apple => {
+            if !target.is_apple() {
+                panic!("the Accelerate BLAS vendor is only available on Apple targets");
+            }
+            Some(BlasConfig::new(BlasVendor::Apple))
+        }
+        BlasVendor::OpenBlas => match find_openblas(target) {
+            Some((cfg, loc)) => {
+                warn(format!(
+                    "building the BLAS backend with OpenBLAS from {loc}"
+                ));
+                Some(cfg)
+            }
+            None => panic!(
+                "BLAS backend requested but OpenBLAS was not found: install it (e.g. \
+                 `libopenblas-dev`), set OPENBLAS_PATH to its install prefix, or set \
+                 SKELM_LLAMA_BLAS_VENDOR=none"
+            ),
+        },
+    }
+}
+
+/// Locate OpenBLAS: `$OPENBLAS_PATH`, then `pkg-config` (`openblas64` first, as
+/// upstream), then the `cblas.h` hint paths of the upstream CMake. Returns the
+/// configuration and a description of where it was found.
+fn find_openblas(target: &Target) -> Option<(BlasConfig, String)> {
+    if let Some(prefix) = env::var_os("OPENBLAS_PATH").map(PathBuf::from) {
+        let include = [
+            prefix.join("include").join("openblas"),
+            prefix.join("include"),
+        ]
+        .into_iter()
+        .find(|d| d.join("cblas.h").is_file());
+        match include {
+            Some(include) => {
+                let lib_dir = prefix.join("lib");
+                // Windows distributions ship either `openblas.lib` (vcpkg) or
+                // `libopenblas.lib` (upstream release archives).
+                let lib = if target.os == "windows" && lib_dir.join("libopenblas.lib").is_file() {
+                    "libopenblas"
+                } else {
+                    "openblas"
+                };
+                let mut cfg = BlasConfig::new(BlasVendor::OpenBlas);
+                cfg.include_dirs.push(include);
+                cfg.link_dirs.push(lib_dir);
+                cfg.libs.push(lib.to_string());
+                return Some((cfg, format!("{} ($OPENBLAS_PATH)", prefix.display())));
+            }
+            None => warn(format!(
+                "OPENBLAS_PATH is set to {} but no cblas.h was found under its include/ directory",
+                prefix.display()
+            )),
+        }
+    }
+
+    for name in ["openblas64", "openblas"] {
+        if let Some(cfg) = pkg_config_blas(name) {
+            return Some((cfg, format!("pkg-config `{name}`")));
+        }
+    }
+
+    let include = [
+        "/usr/include/openblas",
+        "/usr/include/x86_64-linux-gnu/openblas/include",
+        "/opt/homebrew/opt/openblas/include",
+        "/usr/local/opt/openblas/include",
+        "/usr/include",
+        "/usr/local/include",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|d| d.join("cblas.h").is_file())?;
+    let lib_dir = [
+        "/opt/homebrew/opt/openblas/lib",
+        "/usr/local/opt/openblas/lib",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib/aarch64-linux-gnu",
+        "/usr/lib64",
+        "/usr/lib",
+        "/usr/local/lib",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|d| {
+        ["libopenblas.so", "libopenblas.a", "libopenblas.dylib"]
+            .iter()
+            .any(|f| d.join(f).is_file())
+    })?;
+
+    let mut cfg = BlasConfig::new(BlasVendor::OpenBlas);
+    cfg.include_dirs.push(include.clone());
+    cfg.link_dirs.push(lib_dir.clone());
+    cfg.libs.push("openblas".to_string());
+    let loc = format!("{} / {}", include.display(), lib_dir.display());
+    Some((cfg, loc))
+}
+
+/// Query `pkg-config --cflags --libs <name>` and turn it into a BLAS config.
+fn pkg_config_blas(name: &str) -> Option<BlasConfig> {
+    let out = std::process::Command::new("pkg-config")
+        .args(["--cflags", "--libs", name])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let mut cfg = BlasConfig::new(BlasVendor::OpenBlas);
+    for tok in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+        if let Some(dir) = tok.strip_prefix("-I") {
+            cfg.include_dirs.push(PathBuf::from(dir));
+        } else if let Some(def) = tok.strip_prefix("-D") {
+            let (key, value) = match def.split_once('=') {
+                Some((k, v)) => (k.to_string(), Some(v.to_string())),
+                None => (def.to_string(), None),
+            };
+            cfg.defines.push((key, value));
+        } else if let Some(dir) = tok.strip_prefix("-L") {
+            cfg.link_dirs.push(PathBuf::from(dir));
+        } else if let Some(lib) = tok.strip_prefix("-l") {
+            cfg.libs.push(lib.to_string());
+        }
+    }
+    if cfg.libs.is_empty() {
+        return None;
+    }
+    Some(cfg)
 }
 
 // ---------------------------------------------------------------------------
@@ -679,7 +874,13 @@ fn cpu_arch_config(target: &Target) -> CpuArchConfig {
 // ggml library (base + CPU + optional Metal)
 // ---------------------------------------------------------------------------
 
-fn lib_ggml(lib_path: &Path, out_path: &Path, target: &Target, use_metal: bool) -> Vec<PathBuf> {
+fn lib_ggml(
+    lib_path: &Path,
+    out_path: &Path,
+    target: &Target,
+    use_metal: bool,
+    blas: Option<&BlasConfig>,
+) -> Vec<PathBuf> {
     let ggml_path = lib_path.join("ggml");
     let src_path = ggml_path.join("src");
     let include_path = ggml_path.join("include");
@@ -709,6 +910,7 @@ fn lib_ggml(lib_path: &Path, out_path: &Path, target: &Target, use_metal: bool) 
 
     base_defines(&mut common, target);
     os_defines(&mut common, target);
+    msvc_options(&mut common, target);
 
     // specialize for CPP
     let mut cpp = common.clone();
@@ -770,6 +972,20 @@ fn lib_ggml(lib_path: &Path, out_path: &Path, target: &Target, use_metal: bool) 
             c.define(def, None);
             cpp.define(def, None);
         }
+
+        // GGML_ACCELERATE (ON by default upstream): vDSP / vForce for the
+        // vector ops of the CPU backend.
+        if target.is_apple() {
+            for def in [
+                "GGML_USE_ACCELERATE",
+                "ACCELERATE_NEW_LAPACK",
+                "ACCELERATE_LAPACK_ILP64",
+            ] {
+                c.define(def, None);
+                cpp.define(def, None);
+            }
+            println!("cargo:rustc-link-lib=framework=Accelerate");
+        }
     }
 
     // ---- Metal backend (Apple only) -----------------------------------
@@ -817,6 +1033,49 @@ fn lib_ggml(lib_path: &Path, out_path: &Path, target: &Target, use_metal: bool) 
         println!("cargo:rustc-link-lib=framework=MetalKit");
 
         println!("cargo:rustc-cfg=feature_metal");
+    }
+
+    // ---- BLAS backend -------------------------------------------------
+    if let Some(blas) = blas {
+        // makes ggml-backend-reg.cpp register the backend
+        cpp.define("GGML_USE_BLAS", None);
+
+        // the vendor defines and include paths are private to ggml-blas
+        let mut b = common.clone();
+        b.cpp(true).std("c++17");
+        b.flags(&warn.cpp_only);
+        for dir in &blas.include_dirs {
+            b.include(dir);
+        }
+        let vendor_defines: &[&str] = match blas.vendor {
+            BlasVendor::Apple => &[
+                "ACCELERATE_NEW_LAPACK",
+                "ACCELERATE_LAPACK_ILP64",
+                "GGML_BLAS_USE_ACCELERATE",
+            ],
+            BlasVendor::OpenBlas => &["GGML_BLAS_USE_OPENBLAS"],
+        };
+        for def in vendor_defines {
+            b.define(def, None);
+        }
+        for (key, value) in &blas.defines {
+            b.define(key, value.as_deref());
+        }
+        b.file(src_path.join("ggml-blas/ggml-blas.cpp"));
+        backend_intermediates.extend(b.compile_intermediates());
+
+        match blas.vendor {
+            BlasVendor::Apple => println!("cargo:rustc-link-lib=framework=Accelerate"),
+            BlasVendor::OpenBlas => {
+                for dir in &blas.link_dirs {
+                    println!("cargo:rustc-link-search=native={}", dir.display());
+                }
+                for lib in &blas.libs {
+                    println!("cargo:rustc-link-lib={lib}");
+                }
+            }
+        }
+        println!("cargo:rustc-cfg=feature_blas");
     }
 
     cpp.file(src_path.join("ggml-backend-reg.cpp"));
@@ -1037,6 +1296,7 @@ fn lib_llama(lib_path: &Path, out_path: &Path, target: &Target, ggml_objects: Ve
     common.flags(&warn.common);
     base_defines(&mut common, target);
     os_defines(&mut common, target);
+    msvc_options(&mut common, target);
 
     // specialize for CPP (llama is C++ only)
     let mut cpp = common;

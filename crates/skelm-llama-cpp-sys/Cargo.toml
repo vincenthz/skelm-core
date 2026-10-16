@@ -23,6 +23,12 @@ default = []
 # explicit and is a no-op elsewhere.
 metal = []
 
+# BLAS backend. On Apple it is built by default with Accelerate (like upstream)
+# and this feature is a no-op; elsewhere it enables the backend with OpenBLAS
+# (found via OPENBLAS_PATH, pkg-config or the usual system paths). Set
+# SKELM_LLAMA_BLAS_VENDOR=none to disable it. See build.rs.
+blas = []
+
 # Accelerator backends. These are currently *detection only*: enabling one makes
 # build.rs auto-locate the corresponding toolkit and report it, but the backend
 # is not yet compiled — the build falls back to the CPU backend. See build.rs.
@@ -32,4 +38,3 @@ musa = []
 sycl = []
 vulkan = []
 opencl = []
-blas = []

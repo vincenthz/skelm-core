@@ -11,9 +11,9 @@ mod token;
 mod tokendata;
 mod vocab;
 
-pub use context::{Context, ContextParams};
+pub use context::{CacheType, Context, ContextParams, FlashAttn};
 pub use log::{LogKey, LogLevel, llama_logging};
-pub use model::{Model, ModelLoadError, ModelParams};
+pub use model::{LoadMode, Model, ModelLoadError, ModelParams, SplitMode};
 pub use sampler::{
     Sampler, SamplerChain, SamplerDistance, SamplerGreedy, SamplerMinP, SamplerMirostatV1,
     SamplerMirostatV2, SamplerRandom, SamplerTemperature,

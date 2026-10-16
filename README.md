@@ -46,9 +46,11 @@ Jinja chat templates shipped inside GGUF models, including **tool calling**.
 llama.cpp is vendored as a git submodule and built from source (no `cmake` required —
 `crates/skelm-llama-cpp-sys/build.rs` replicates the relevant CMake detection and
 compilation), so you need a **C/C++ toolchain**. On macOS install the Xcode
-command-line tools (`xcode-select --install`) — the Metal backend is compiled in
-automatically. On Linux/Windows the CPU backend is built with the correct
-per-architecture sources and flags (x86, ARM, etc.).
+command-line tools (`xcode-select --install`) — the Metal backend and the
+Accelerate-based BLAS backend are compiled in automatically. On Linux/Windows the
+CPU backend is built with the correct per-architecture sources and flags (x86, ARM,
+etc.); add `--features blas` to also build the BLAS backend against OpenBLAS (found
+via `OPENBLAS_PATH`, `pkg-config` or the usual system paths, e.g. `libopenblas-dev`).
 
 ```sh
 git clone --recursive https://github.com/vincenthz/skelm-core

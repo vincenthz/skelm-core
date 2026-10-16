@@ -31,3 +31,8 @@ serde_json = "1"
 tracing-subscriber = "0.3"
 rustyline = "17"
 ctrlc = "3.5"
+
+[features]
+default = []
+# BLAS backend (Accelerate on Apple is always built; OpenBLAS elsewhere)
+blas = ["skelm-llama-cpp/blas"]

@@ -1,7 +1,9 @@
 use skelm_llama_cpp_sys::llama;
+use std::ffi::{CStr, CString};
+use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::sync::Arc;
-use std::{ffi::CStr, path::Path};
+use thiserror::Error;
 
 use crate::context::ContextParams;
 use crate::vocab::{Vocab, VocabPtr};
@@ -26,9 +28,108 @@ impl Drop for ModelPtr {
     }
 }
 
-#[derive(Default)]
+/// How to split the model across multiple GPUs
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitMode {
+    /// single GPU (`ModelParams::main_gpu`)
+    None,
+    /// split layers and KV across GPUs
+    Layer,
+    /// split layers and KV across GPUs, use tensor parallelism if supported
+    Row,
+    Tensor,
+}
+
+impl SplitMode {
+    fn to_c(self) -> llama::llama_split_mode {
+        match self {
+            SplitMode::None => llama::llama_split_mode::LLAMA_SPLIT_MODE_NONE,
+            SplitMode::Layer => llama::llama_split_mode::LLAMA_SPLIT_MODE_LAYER,
+            SplitMode::Row => llama::llama_split_mode::LLAMA_SPLIT_MODE_ROW,
+            SplitMode::Tensor => llama::llama_split_mode::LLAMA_SPLIT_MODE_TENSOR,
+        }
+    }
+
+    fn from_c(value: llama::llama_split_mode) -> Self {
+        match value {
+            llama::llama_split_mode::LLAMA_SPLIT_MODE_NONE => SplitMode::None,
+            llama::llama_split_mode::LLAMA_SPLIT_MODE_ROW => SplitMode::Row,
+            llama::llama_split_mode::LLAMA_SPLIT_MODE_TENSOR => SplitMode::Tensor,
+            _ => SplitMode::Layer,
+        }
+    }
+}
+
+/// How to load the model weights
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadMode {
+    /// auto-detect based on device capabilities
+    Auto,
+    /// no special loading mode (read the file)
+    None,
+    /// memory map the model
+    Mmap,
+    /// force the system to keep the model in RAM rather than swapping or compressing
+    Mlock,
+    /// mmap + mlock
+    MmapMlock,
+    /// use direct I/O if available
+    DirectIo,
+}
+
+impl LoadMode {
+    fn to_c(self) -> llama::llama_load_mode {
+        match self {
+            LoadMode::Auto => llama::llama_load_mode::LLAMA_LOAD_MODE_AUTO,
+            LoadMode::None => llama::llama_load_mode::LLAMA_LOAD_MODE_NONE,
+            LoadMode::Mmap => llama::llama_load_mode::LLAMA_LOAD_MODE_MMAP,
+            LoadMode::Mlock => llama::llama_load_mode::LLAMA_LOAD_MODE_MLOCK,
+            LoadMode::MmapMlock => llama::llama_load_mode::LLAMA_LOAD_MODE_MMAP_MLOCK,
+            LoadMode::DirectIo => llama::llama_load_mode::LLAMA_LOAD_MODE_DIRECT_IO,
+        }
+    }
+
+    fn from_c(value: llama::llama_load_mode) -> Self {
+        match value {
+            llama::llama_load_mode::LLAMA_LOAD_MODE_NONE => LoadMode::None,
+            llama::llama_load_mode::LLAMA_LOAD_MODE_MMAP => LoadMode::Mmap,
+            llama::llama_load_mode::LLAMA_LOAD_MODE_MLOCK => LoadMode::Mlock,
+            llama::llama_load_mode::LLAMA_LOAD_MODE_MMAP_MLOCK => LoadMode::MmapMlock,
+            llama::llama_load_mode::LLAMA_LOAD_MODE_DIRECT_IO => LoadMode::DirectIo,
+            _ => LoadMode::Auto,
+        }
+    }
+}
+
+/// Model loading parameters; `Default` uses the llama.cpp defaults
+#[derive(Clone, Debug)]
 pub struct ModelParams {
+    /// only load the vocabulary, no weights
     pub vocab_only: bool,
+    /// number of layers to store in VRAM, a negative value means all layers
+    pub n_gpu_layers: i32,
+    /// how to split the model across multiple GPUs
+    pub split_mode: SplitMode,
+    /// the GPU used for the entire model when `split_mode` is `SplitMode::None`
+    pub main_gpu: i32,
+    /// how to load the model weights
+    pub load_mode: LoadMode,
+    /// validate model tensor data
+    pub check_tensors: bool,
+}
+
+impl Default for ModelParams {
+    fn default() -> Self {
+        let params = unsafe { llama::llama_model_default_params() };
+        Self {
+            vocab_only: params.vocab_only,
+            n_gpu_layers: params.n_gpu_layers,
+            split_mode: SplitMode::from_c(params.split_mode),
+            main_gpu: params.main_gpu,
+            load_mode: LoadMode::from_c(params.load_mode),
+            check_tensors: params.check_tensors,
+        }
+    }
 }
 
 impl ModelParams {
@@ -36,28 +137,33 @@ impl ModelParams {
         let mut params = unsafe { llama::llama_model_default_params() };
 
         params.vocab_only = self.vocab_only;
+        params.n_gpu_layers = self.n_gpu_layers;
+        params.split_mode = self.split_mode.to_c();
+        params.main_gpu = self.main_gpu;
+        params.load_mode = self.load_mode.to_c();
+        params.check_tensors = self.check_tensors;
         params
     }
 }
 
-#[derive(Debug)]
-pub struct ModelLoadError;
-
-impl std::fmt::Display for ModelLoadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Model Load Error (consult logging for reasons)")
-    }
+#[derive(Debug, Error)]
+pub enum ModelLoadError {
+    #[error(
+        "invalid model path {0:?}: it must not contain NUL bytes, and must be UTF-8 on Windows"
+    )]
+    InvalidPath(PathBuf),
+    #[error("Model Load Error (consult logging for reasons)")]
+    LoadFailed,
 }
-
-impl std::error::Error for ModelLoadError {}
 
 impl Model {
     pub fn load(path: impl AsRef<Path>, params: &ModelParams) -> Result<Self, ModelLoadError> {
         let path = path.as_ref();
+        let cpath = path_to_cpath(path).ok_or_else(|| ModelLoadError::InvalidPath(path.into()))?;
         let c_params = params.as_c();
-        let ret = unsafe { llama::llama_model_load_from_file(path_to_cpath(path), c_params) };
+        let ret = unsafe { llama::llama_model_load_from_file(cpath.as_ptr(), c_params) };
         if ret.is_null() {
-            return Err(ModelLoadError);
+            return Err(ModelLoadError::LoadFailed);
         }
 
         Ok(Model {
@@ -121,10 +227,43 @@ impl Model {
     }
 }
 
+/// Convert a path to the NUL-terminated string llama.cpp expects: the raw bytes
+/// on unix, UTF-8 elsewhere (on Windows `ggml_fopen` converts UTF-8 to UTF-16).
 #[cfg(unix)]
-use std::os::unix::ffi::OsStrExt;
+fn path_to_cpath(path: &Path) -> Option<CString> {
+    use std::os::unix::ffi::OsStrExt;
+    CString::new(path.as_os_str().as_bytes()).ok()
+}
 
-#[cfg(unix)]
-fn path_to_cpath(path: &Path) -> *const ::std::os::raw::c_char {
-    path.as_os_str().as_bytes().as_ptr() as *const ::std::os::raw::c_char
+#[cfg(not(unix))]
+fn path_to_cpath(path: &Path) -> Option<CString> {
+    CString::new(path.to_str()?).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpath_is_nul_terminated() {
+        let cpath = path_to_cpath(Path::new("/tmp/model.gguf")).unwrap();
+        assert_eq!(cpath.as_bytes_with_nul(), b"/tmp/model.gguf\0");
+    }
+
+    #[test]
+    fn cpath_rejects_interior_nul() {
+        assert!(path_to_cpath(Path::new("/tmp/mo\0del.gguf")).is_none());
+    }
+
+    #[test]
+    fn default_params_round_trip() {
+        let c = unsafe { llama::llama_model_default_params() };
+        let back = ModelParams::default().as_c();
+        assert_eq!(back.vocab_only, c.vocab_only);
+        assert_eq!(back.n_gpu_layers, c.n_gpu_layers);
+        assert_eq!(back.split_mode, c.split_mode);
+        assert_eq!(back.main_gpu, c.main_gpu);
+        assert_eq!(back.load_mode, c.load_mode);
+        assert_eq!(back.check_tensors, c.check_tensors);
+    }
 }

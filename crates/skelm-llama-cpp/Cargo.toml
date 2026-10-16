@@ -12,3 +12,8 @@ description = "skelm rust safe wrapper for llama.cpp"
 [dependencies]
 skelm-llama-cpp-sys.workspace = true
 thiserror.workspace = true
+
+[features]
+default = []
+# BLAS backend (Accelerate on Apple is always built; OpenBLAS elsewhere)
+blas = ["skelm-llama-cpp-sys/blas"]
