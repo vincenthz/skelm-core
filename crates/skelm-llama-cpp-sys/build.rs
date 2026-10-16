@@ -370,7 +370,9 @@ fn report_backends(target: &Target) {
 
     // The `metal` feature is only meaningful on Apple targets.
     if feature_enabled("metal") && !target.is_macos() {
-        warn("the `metal` feature was enabled but the target is not Apple; Metal will not be built.");
+        warn(
+            "the `metal` feature was enabled but the target is not Apple; Metal will not be built.",
+        );
     }
 
     for gpu in Gpu::ALL {
@@ -430,9 +432,7 @@ fn which(prog: &str) -> Option<PathBuf> {
     let paths = env::var_os("PATH")?;
     let candidates: Vec<String> = if cfg!(target_os = "windows") {
         let exts = env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT".into());
-        exts.split(';')
-            .map(|e| format!("{}{}", prog, e))
-            .collect()
+        exts.split(';').map(|e| format!("{}{}", prog, e)).collect()
     } else {
         vec![prog.to_string()]
     };
@@ -632,9 +632,8 @@ fn cpu_arch_config(target: &Target) -> CpuArchConfig {
         }
         Arch::PowerPC => {
             cfg.c_files.push("arch/powerpc/quants.c");
-            cfg.flags = flag_override.unwrap_or_else(|| {
-                vec!["-mcpu=native".to_string(), "-mtune=native".to_string()]
-            });
+            cfg.flags = flag_override
+                .unwrap_or_else(|| vec!["-mcpu=native".to_string(), "-mtune=native".to_string()]);
         }
         Arch::Riscv64 => {
             cfg.c_files.push("arch/riscv/quants.c");
@@ -647,9 +646,8 @@ fn cpu_arch_config(target: &Target) -> CpuArchConfig {
         Arch::S390x => {
             cfg.c_files.push("arch/s390/quants.c");
             cfg.cpp_files.push("arch/s390/repack.cpp");
-            cfg.flags = flag_override.unwrap_or_else(|| {
-                vec!["-march=native".to_string(), "-mtune=native".to_string()]
-            });
+            cfg.flags = flag_override
+                .unwrap_or_else(|| vec!["-march=native".to_string(), "-mtune=native".to_string()]);
         }
         Arch::LoongArch64 => {
             cfg.c_files.push("arch/loongarch/quants.c");

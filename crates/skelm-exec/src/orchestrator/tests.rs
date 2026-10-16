@@ -57,7 +57,11 @@ fn empty_params() -> Value {
 
 #[test]
 fn single_agent_no_tools_returns_content() {
-    let orch = Orchestrator::spawn(mock(|_p| "hello world".to_string()), vec![], Limits::default());
+    let orch = Orchestrator::spawn(
+        mock(|_p| "hello world".to_string()),
+        vec![],
+        Limits::default(),
+    );
     let (answer, truncated) = orch.run(
         ModelParameters::single_turn("You are helpful.", "hi"),
         |_, _| String::new(),
@@ -81,8 +85,9 @@ fn delegate_result_flows_back_to_parent() {
     });
 
     let orch = Orchestrator::spawn(backend, vec![], Limits::default());
-    let (answer, truncated) =
-        orch.run(ModelParameters::single_turn("root", "solve"), |_, _| String::new());
+    let (answer, truncated) = orch.run(ModelParameters::single_turn("root", "solve"), |_, _| {
+        String::new()
+    });
     assert_eq!(answer, "the answer is 4");
     assert!(!truncated);
 }
@@ -113,8 +118,9 @@ fn multiple_tool_calls_resolve_in_call_order() {
     });
 
     let orch = Orchestrator::spawn(backend, tools, Limits::default());
-    let (answer, truncated) =
-        orch.run(ModelParameters::single_turn("root", "go"), |_, _| String::new());
+    let (answer, truncated) = orch.run(ModelParameters::single_turn("root", "go"), |_, _| {
+        String::new()
+    });
     assert_eq!(answer, "A|B");
     assert!(!truncated);
 }
@@ -138,12 +144,18 @@ fn deferred_tool_surfaces_and_fulfill_unblocks() {
     let orch = Orchestrator::spawn(backend, tools, Limits::default());
     let seen = Arc::new(AtomicUsize::new(0));
     let seen2 = seen.clone();
-    let (answer, truncated) = orch.run(ModelParameters::single_turn("root", "go"), move |tool, args| {
-        assert_eq!(tool, "ask_human");
-        assert_eq!(args.get("question").and_then(|v| v.as_str()), Some("approve?"));
-        seen2.fetch_add(1, Ordering::SeqCst);
-        "approved".to_string()
-    });
+    let (answer, truncated) = orch.run(
+        ModelParameters::single_turn("root", "go"),
+        move |tool, args| {
+            assert_eq!(tool, "ask_human");
+            assert_eq!(
+                args.get("question").and_then(|v| v.as_str()),
+                Some("approve?")
+            );
+            seen2.fetch_add(1, Ordering::SeqCst);
+            "approved".to_string()
+        },
+    );
 
     assert_eq!(answer, "done: approved");
     assert!(!truncated);
@@ -165,8 +177,9 @@ fn budget_exhaustion_stops_and_truncates() {
         ..Limits::default()
     };
     let orch = Orchestrator::spawn(backend, vec![], limits);
-    let (answer, truncated) =
-        orch.run(ModelParameters::single_turn("root", "go"), |_, _| String::new());
+    let (answer, truncated) = orch.run(ModelParameters::single_turn("root", "go"), |_, _| {
+        String::new()
+    });
 
     assert!(truncated);
     // Exactly one generation happened: the root's. The delegated child never ran
@@ -201,8 +214,10 @@ fn max_depth_blocks_deeper_delegation() {
         ..Limits::default()
     };
     let orch = Orchestrator::spawn(backend, vec![], limits);
-    let (answer, truncated) =
-        orch.run(ModelParameters::single_turn("root", "root-task"), |_, _| String::new());
+    let (answer, truncated) = orch
+        .run(ModelParameters::single_turn("root", "root-task"), |_, _| {
+            String::new()
+        });
 
     assert!(!truncated);
     assert!(
@@ -245,14 +260,22 @@ fn max_agents_caps_total_spawns() {
         ..Limits::default()
     };
     let orch = Orchestrator::spawn(backend, vec![], limits);
-    let (answer, truncated) =
-        orch.run(ModelParameters::single_turn("root", "root-task"), |_, _| String::new());
+    let (answer, truncated) = orch
+        .run(ModelParameters::single_turn("root", "root-task"), |_, _| {
+            String::new()
+        });
 
     assert!(!truncated);
-    assert!(answer.contains("done-a"), "first delegate should run: {answer}");
+    assert!(
+        answer.contains("done-a"),
+        "first delegate should run: {answer}"
+    );
     assert!(
         answer.contains("agent budget exhausted"),
         "second delegate should be refused: {answer}"
     );
-    assert!(!answer.contains("done-b"), "second child must not run: {answer}");
+    assert!(
+        !answer.contains("done-b"),
+        "second child must not run: {answer}"
+    );
 }

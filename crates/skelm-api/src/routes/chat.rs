@@ -40,8 +40,8 @@ pub async fn chat_completions(
     }
 
     let permit = state.gen_permit().await;
-    let (out, prompt_tokens) =
-        tokio::task::spawn_blocking(move || -> anyhow::Result<(crate::generate::GenResult, usize)> {
+    let (out, prompt_tokens) = tokio::task::spawn_blocking(
+        move || -> anyhow::Result<(crate::generate::GenResult, usize)> {
             let _permit = permit;
             let prompt = model.model_template_render(&params);
             let prompt_tokens = model.vocab.tokenize(prompt.as_bytes(), true).len();
@@ -49,22 +49,26 @@ pub async fn chat_completions(
             let cancel = AtomicBool::new(false);
             let out = generate(&mut context, &prompt, &cfg, &cancel, |_| {})?;
             Ok((out, prompt_tokens))
-        })
-        .await??;
+        },
+    )
+    .await??;
 
     // Recover any tool calls the model emitted; otherwise the whole text is the answer.
     let parsed = parse_tool_calls(&out.text);
-    let (content, tool_calls, finish): (Option<String>, Option<Vec<ResponseToolCall>>, &'static str) =
-        if parsed.tool_calls.is_empty() {
-            (Some(out.text), None, out.finish_reason.as_str())
-        } else {
-            let content = (!parsed.content.is_empty()).then_some(parsed.content);
-            (
-                content,
-                Some(to_response_tool_calls(parsed.tool_calls)),
-                "tool_calls",
-            )
-        };
+    let (content, tool_calls, finish): (
+        Option<String>,
+        Option<Vec<ResponseToolCall>>,
+        &'static str,
+    ) = if parsed.tool_calls.is_empty() {
+        (Some(out.text), None, out.finish_reason.as_str())
+    } else {
+        let content = (!parsed.content.is_empty()).then_some(parsed.content);
+        (
+            content,
+            Some(to_response_tool_calls(parsed.tool_calls)),
+            "tool_calls",
+        )
+    };
 
     let response = ChatCompletionResponse {
         id: new_id("chatcmpl"),

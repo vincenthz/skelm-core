@@ -19,9 +19,7 @@ pub use orchestrator::{
     AgentId, GenBackend, HostEvent, Limits, LlamaGenBackend, Orchestrator, PendingId, ToolKind,
     ToolSpec,
 };
-pub use template::{
-    Message, Tool, ToolCall, ToolCallFunction, ToolFunction, chat_template,
-};
+pub use template::{Message, Tool, ToolCall, ToolCallFunction, ToolFunction, chat_template};
 pub use toolparse::{ParsedOutput, parse_tool_calls};
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]

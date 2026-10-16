@@ -85,7 +85,8 @@ pub fn model_config_get(model_descr: &ModelDescr) -> Result<ModelConfig, ModelCo
     // qwen2.5:7b), and nothing in the generation path consumes it — the chat
     // template comes from the GGUF. Default to null when absent rather than
     // refusing to load the model.
-    let params_json = if let Some(params_layer) = manifest.find_media_type(MEDIA_TYPE_IMAGE_PARAMS) {
+    let params_json = if let Some(params_layer) = manifest.find_media_type(MEDIA_TYPE_IMAGE_PARAMS)
+    {
         let params_data = store
             .blob_read_string(&params_layer.digest)
             .map_err(|e| ModelConfigGetError::ReadingParameterError(e, model_descr.clone()))?;

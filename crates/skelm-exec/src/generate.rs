@@ -6,9 +6,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use skelm_llama_cpp::{
-    Sampler, SamplerChain, SamplerDistance, SamplerMinP, SamplerTemperature,
-};
+use skelm_llama_cpp::{Sampler, SamplerChain, SamplerDistance, SamplerMinP, SamplerTemperature};
 
 use crate::Context;
 

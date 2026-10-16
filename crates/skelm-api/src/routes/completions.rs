@@ -37,16 +37,17 @@ pub async fn completions(
     }
 
     let permit = state.gen_permit().await;
-    let (out, prompt_tokens) =
-        tokio::task::spawn_blocking(move || -> anyhow::Result<(crate::generate::GenResult, usize)> {
+    let (out, prompt_tokens) = tokio::task::spawn_blocking(
+        move || -> anyhow::Result<(crate::generate::GenResult, usize)> {
             let _permit = permit;
             let prompt_tokens = model.vocab.tokenize(prompt.as_bytes(), true).len();
             let mut context = model.new_context();
             let cancel = AtomicBool::new(false);
             let out = generate(&mut context, &prompt, &cfg, &cancel, |_| {})?;
             Ok((out, prompt_tokens))
-        })
-        .await??;
+        },
+    )
+    .await??;
 
     let response = CompletionResponse {
         id: new_id("cmpl"),

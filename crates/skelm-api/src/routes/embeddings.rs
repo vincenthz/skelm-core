@@ -16,7 +16,9 @@ pub async fn embeddings(
 
     let inputs = req.input.into_vec();
     if inputs.is_empty() {
-        return Err(ApiError::BadRequest("`input` must not be empty".to_string()));
+        return Err(ApiError::BadRequest(
+            "`input` must not be empty".to_string(),
+        ));
     }
 
     let permit = state.gen_permit().await;

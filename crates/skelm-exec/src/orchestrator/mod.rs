@@ -46,8 +46,8 @@ use serde_json::Value;
 
 use crate::{Message, Model, ModelParameters, Tool, ToolCall, parse_tool_calls};
 
-pub use tools::{ToolKind, ToolSpec};
 use tools::{DELEGATE_TOOL, delegate_tool_def, parse_delegate_args};
+pub use tools::{ToolKind, ToolSpec};
 
 type SyncHandler = Arc<dyn Fn(&ToolCall) -> anyhow::Result<String> + Send + Sync>;
 
@@ -150,8 +150,14 @@ struct ToolJob {
 }
 
 enum Event {
-    GenDone { agent: AgentId, text: String },
-    GenFailed { agent: AgentId, error: String },
+    GenDone {
+        agent: AgentId,
+        text: String,
+    },
+    GenFailed {
+        agent: AgentId,
+        error: String,
+    },
     ToolDone {
         pending: PendingId,
         result: Result<String, String>,
@@ -202,7 +208,13 @@ impl Orchestrator {
             thread::spawn(move || tool_worker(rx, ev));
         }
 
-        let scheduler = Scheduler::new(Registry::new(tools, limits.max_depth), limits, tool_tx, host_tx, gen_tx);
+        let scheduler = Scheduler::new(
+            Registry::new(tools, limits.max_depth),
+            limits,
+            tool_tx,
+            host_tx,
+            gen_tx,
+        );
         let handle = thread::spawn(move || scheduler.run(events_rx));
 
         Orchestrator {
@@ -215,7 +227,9 @@ impl Orchestrator {
     /// Seed the root agent. Its tool set is taken from the orchestrator's registry
     /// (any `tools` on `params` are replaced).
     pub fn submit_root(&self, params: ModelParameters) {
-        let _ = self.events_tx.send(Event::Cmd(Cmd::SubmitRoot(Box::new(params))));
+        let _ = self
+            .events_tx
+            .send(Event::Cmd(Cmd::SubmitRoot(Box::new(params))));
     }
 
     /// Provide the result for a [`HostEvent::NeedInput`]. Unknown or already-filled
@@ -255,7 +269,11 @@ impl Orchestrator {
         self.submit_root(root);
         loop {
             match self.recv() {
-                Some(HostEvent::NeedInput { pending, tool, args }) => {
+                Some(HostEvent::NeedInput {
+                    pending,
+                    tool,
+                    args,
+                }) => {
                     let result = on_need_input(&tool, &args);
                     self.fulfill(pending, result);
                 }
@@ -507,7 +525,11 @@ impl Scheduler {
                 .iter()
                 .map(|c| c.function.name.as_str())
                 .collect();
-            eprintln!("[orch] agent#{} requested tool(s): {}", id.0, names.join(", "));
+            eprintln!(
+                "[orch] agent#{} requested tool(s): {}",
+                id.0,
+                names.join(", ")
+            );
         }
 
         // Record the assistant's tool-call turn, then open a slot per call.

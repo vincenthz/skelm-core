@@ -455,7 +455,11 @@ async fn cmd_orchestrate(
     // final answer when the root finishes.
     loop {
         match orch.recv() {
-            Some(HostEvent::NeedInput { pending, tool, args }) => {
+            Some(HostEvent::NeedInput {
+                pending,
+                tool,
+                args,
+            }) => {
                 eprintln!("\n[{}] {}", tool, args);
                 let mut line = String::new();
                 std::io::stdin().read_line(&mut line)?;

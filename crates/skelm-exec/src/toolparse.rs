@@ -280,7 +280,8 @@ mod tests {
 
     #[test]
     fn llama_python_tag() {
-        let out = "<|python_tag|>{\"name\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}";
+        let out =
+            "<|python_tag|>{\"name\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}";
         let parsed = parse_tool_calls(out);
         assert_eq!(parsed.tool_calls.len(), 1);
         assert_eq!(parsed.tool_calls[0].function.name, "get_weather");

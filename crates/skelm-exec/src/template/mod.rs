@@ -204,14 +204,20 @@ mod tests {
 
     #[test]
     fn renders_tools_section() {
-        let messages = vec![Message::system("be helpful"), Message::user("weather in Paris?")];
+        let messages = vec![
+            Message::system("be helpful"),
+            Message::user("weather in Paris?"),
+        ];
         let out = chat_template(TOOL_TEMPLATE, &messages, &[weather_tool()], true).unwrap();
 
         // tool definition surfaced to the template
         assert!(out.contains("<tools>"), "missing tools section:\n{out}");
         assert!(out.contains("get_weather: Get the weather for a city"));
         // `tojson` produced the OpenAI-style shape
-        assert!(out.contains(r#""type":"function""#), "tojson shape wrong:\n{out}");
+        assert!(
+            out.contains(r#""type":"function""#),
+            "tojson shape wrong:\n{out}"
+        );
         assert!(out.contains(r#""name":"get_weather""#));
         // messages and generation prompt both render
         assert!(out.contains("<|system|>"));
@@ -223,7 +229,10 @@ mod tests {
     fn empty_tools_is_falsy() {
         let messages = vec![Message::user("hi")];
         let out = chat_template(TOOL_TEMPLATE, &messages, &[], true).unwrap();
-        assert!(!out.contains("<tools>"), "empty tools should render no section:\n{out}");
+        assert!(
+            !out.contains("<tools>"),
+            "empty tools should render no section:\n{out}"
+        );
     }
 
     #[test]

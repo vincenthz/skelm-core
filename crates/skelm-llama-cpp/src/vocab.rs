@@ -2,7 +2,7 @@ use std::{ffi::c_char, ptr::null_mut, sync::Arc};
 
 use skelm_llama_cpp_sys::llama::{self, llama_token_attr};
 
-use crate::{token::Token, Model};
+use crate::{Model, token::Token};
 
 #[derive(Clone)]
 #[allow(dead_code)]
