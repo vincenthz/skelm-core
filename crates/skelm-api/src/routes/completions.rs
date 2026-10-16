@@ -41,7 +41,7 @@ pub async fn completions(
         move || -> anyhow::Result<(crate::generate::GenResult, usize)> {
             let _permit = permit;
             let prompt_tokens = model.vocab.tokenize(prompt.as_bytes(), true).len();
-            let mut context = model.new_context();
+            let mut context = model.try_new_context()?;
             let cancel = AtomicBool::new(false);
             let out = generate(&mut context, &prompt, &cfg, &cancel, |_| {})?;
             Ok((out, prompt_tokens))
@@ -82,7 +82,14 @@ fn stream_completion(
 
     sse_stream(move |tx| {
         let _permit = permit;
-        let mut context = model.new_context();
+        let mut context = match model.try_new_context() {
+            Ok(context) => context,
+            Err(e) => {
+                tracing::error!("completion stream context creation failed: {e}");
+                tx.done();
+                return;
+            }
+        };
         let cancel = AtomicBool::new(false);
 
         let result = generate(&mut context, &prompt, &cfg, &cancel, |chunk| {

@@ -13,6 +13,8 @@ use super::context::{Context, ContextCreateError};
 #[derive(Clone)]
 pub struct Model {
     pub(crate) ptr: Arc<ModelPtr>,
+    /// whether the MTP (nextn) layers were loaded, see `ModelParams::load_mtp`
+    pub(crate) mtp_loaded: bool,
 }
 
 pub struct ModelPtr(pub(crate) *mut llama::llama_model);
@@ -116,6 +118,9 @@ pub struct ModelParams {
     pub load_mode: LoadMode,
     /// validate model tensor data
     pub check_tensors: bool,
+    /// load the MTP (multi-token prediction, a.k.a. nextn) layers, needed for
+    /// MTP speculative decoding; they are skipped otherwise
+    pub load_mtp: bool,
 }
 
 impl Default for ModelParams {
@@ -128,6 +133,7 @@ impl Default for ModelParams {
             main_gpu: params.main_gpu,
             load_mode: LoadMode::from_c(params.load_mode),
             check_tensors: params.check_tensors,
+            load_mtp: params.load_mtp,
         }
     }
 }
@@ -142,6 +148,7 @@ impl ModelParams {
         params.main_gpu = self.main_gpu;
         params.load_mode = self.load_mode.to_c();
         params.check_tensors = self.check_tensors;
+        params.load_mtp = self.load_mtp;
         params
     }
 }
@@ -168,6 +175,7 @@ impl Model {
 
         Ok(Model {
             ptr: Arc::new(ModelPtr(ret)),
+            mtp_loaded: params.load_mtp && !params.vocab_only,
         })
     }
 
@@ -210,6 +218,40 @@ impl Model {
         unsafe { llama::llama_model_n_embd(self.ptr.0) as usize }
     }
 
+    /// Whether `other` is a handle to the same loaded model
+    pub fn same_as(&self, other: &Model) -> bool {
+        Arc::ptr_eq(&self.ptr, &other.ptr)
+    }
+
+    /// Width of the hidden-state rows a model outputs (the MTP input width)
+    pub fn n_embd_out(&self) -> usize {
+        unsafe { llama::llama_model_n_embd_out(self.ptr.0) as usize }
+    }
+
+    /// Number of MTP (nextn) layers in the model, 0 if it has none
+    pub fn n_layer_nextn(&self) -> usize {
+        unsafe { llama::llama_model_n_layer_nextn(self.ptr.0).max(0) as usize }
+    }
+
+    /// Whether the model can drive MTP speculative decoding: it has MTP layers,
+    /// and they were loaded (`ModelParams::load_mtp`)
+    pub fn has_mtp(&self) -> bool {
+        self.mtp_loaded && self.n_layer_nextn() > 0
+    }
+
+    /// The architecture name from the GGUF metadata (e.g. `qwen2`)
+    pub fn architecture(&self) -> Option<String> {
+        self.meta_val_str("general.architecture")
+    }
+
+    /// A GGUF metadata value of the model, as a string
+    pub fn meta_val_str(&self, key: &str) -> Option<String> {
+        let key = CString::new(key).ok()?;
+        read_meta_string(|buf, len| unsafe {
+            llama::llama_model_meta_val_str(self.ptr.0, key.as_ptr(), buf, len)
+        })
+    }
+
     /// Create a new context for this model
     pub fn new_context(&self, params: &ContextParams) -> Result<Context, ContextCreateError> {
         Context::new(self.clone(), params)
@@ -227,16 +269,35 @@ impl Model {
     }
 }
 
+/// Call a llama.cpp "write a string into `buf`" function, growing the buffer
+/// until the value fits. These return the full length, or -1 on failure.
+pub(crate) fn read_meta_string(
+    mut f: impl FnMut(*mut ::std::os::raw::c_char, usize) -> i32,
+) -> Option<String> {
+    let mut buf = vec![0u8; 256];
+    loop {
+        let n = f(buf.as_mut_ptr() as *mut ::std::os::raw::c_char, buf.len());
+        if n < 0 {
+            return None;
+        }
+        if (n as usize) < buf.len() {
+            buf.truncate(n as usize);
+            return Some(String::from_utf8_lossy(&buf).into_owned());
+        }
+        buf.resize(n as usize + 1, 0);
+    }
+}
+
 /// Convert a path to the NUL-terminated string llama.cpp expects: the raw bytes
 /// on unix, UTF-8 elsewhere (on Windows `ggml_fopen` converts UTF-8 to UTF-16).
 #[cfg(unix)]
-fn path_to_cpath(path: &Path) -> Option<CString> {
+pub(crate) fn path_to_cpath(path: &Path) -> Option<CString> {
     use std::os::unix::ffi::OsStrExt;
     CString::new(path.as_os_str().as_bytes()).ok()
 }
 
 #[cfg(not(unix))]
-fn path_to_cpath(path: &Path) -> Option<CString> {
+pub(crate) fn path_to_cpath(path: &Path) -> Option<CString> {
     CString::new(path.to_str()?).ok()
 }
 
@@ -265,5 +326,6 @@ mod tests {
         assert_eq!(back.main_gpu, c.main_gpu);
         assert_eq!(back.load_mode, c.load_mode);
         assert_eq!(back.check_tensors, c.check_tensors);
+        assert_eq!(back.load_mtp, c.load_mtp);
     }
 }

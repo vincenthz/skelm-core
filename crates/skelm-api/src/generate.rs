@@ -138,43 +138,46 @@ pub fn generate(
     let mut completion_tokens = 0usize;
     let mut finish = FinishReason::Stop;
 
-    loop {
+    'generation: loop {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        let Some(token) = llama_ctx.next_token(&mut sampler, &vocab) else {
-            break; // end-of-generation
-        };
-        llama_ctx.append_tokens(&[token])?;
-        completion_tokens += 1;
+        // one token, or several with speculative decoding
+        let step = llama_ctx.step(&mut sampler, &vocab)?;
+        for token in step.tokens {
+            completion_tokens += 1;
 
-        if !vocab.token_attr(token).is_control() {
-            bytes.extend_from_slice(&vocab.as_bytes(token));
-            let text = valid_prefix(&bytes);
+            if !vocab.token_attr(token).is_control() {
+                bytes.extend_from_slice(&vocab.as_bytes(token));
+                let text = valid_prefix(&bytes);
 
-            if let Some(cut) = earliest_stop(text, &cfg.stop) {
-                if cut > emitted {
-                    on_text(&text[emitted..cut]);
+                if let Some(cut) = earliest_stop(text, &cfg.stop) {
+                    if cut > emitted {
+                        on_text(&text[emitted..cut]);
+                    }
+                    return Ok(GenResult {
+                        text: text[..cut].to_string(),
+                        completion_tokens,
+                        finish_reason: FinishReason::Stop,
+                    });
                 }
-                return Ok(GenResult {
-                    text: text[..cut].to_string(),
-                    completion_tokens,
-                    finish_reason: FinishReason::Stop,
-                });
+
+                let end = text.len() - holdback_len(text, &cfg.stop);
+                if end > emitted {
+                    on_text(&text[emitted..end]);
+                    emitted = end;
+                }
             }
 
-            let end = text.len() - holdback_len(text, &cfg.stop);
-            if end > emitted {
-                on_text(&text[emitted..end]);
-                emitted = end;
+            if let Some(max) = cfg.max_tokens {
+                if completion_tokens >= max {
+                    finish = FinishReason::Length;
+                    break 'generation;
+                }
             }
         }
-
-        if let Some(max) = cfg.max_tokens {
-            if completion_tokens >= max {
-                finish = FinishReason::Length;
-                break;
-            }
+        if step.eog {
+            break; // end-of-generation
         }
     }
 

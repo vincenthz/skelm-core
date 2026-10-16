@@ -16,6 +16,7 @@ path = "src/main.rs"
 skelm-api.workspace = true
 skelm-download.workspace = true
 skelm-exec.workspace = true
+skelm-hf.workspace = true
 skelm-llama-cpp.workspace = true
 skelm-ollama.workspace = true
 anyhow.workspace = true

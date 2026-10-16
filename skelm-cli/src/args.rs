@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 /// skelm — manage and run local LLMs.
 #[derive(Parser, Debug)]
@@ -17,7 +17,8 @@ pub enum Commands {
         #[arg(short, long)]
         filter: Option<String>,
     },
-    /// Pull an model by name
+    /// Pull a model by name: `<model>:<variant>` from the Ollama registry, or
+    /// `hf.co/<owner>/<name>[:<quantization>]` from Hugging Face
     Pull {
         /// The name of the model to pull
         name: String,
@@ -78,6 +79,8 @@ pub enum Commands {
         no_prompt: bool,
         #[arg(long)]
         output: Option<String>,
+        #[command(flatten)]
+        options: ModelOptions,
     },
     /// Run a model as a multi-agent orchestrator: the model can fan work out to
     /// sub-agents via the built-in `delegate` tool, under a step budget.
@@ -113,6 +116,8 @@ pub enum Commands {
         /// Maximum delegation depth (root is depth 0)
         #[arg(long, default_value_t = 3)]
         max_depth: usize,
+        #[command(flatten)]
+        options: ModelOptions,
     },
     /// Serve an OpenAI-compatible HTTP API (chat/completions, completions,
     /// embeddings and models) backed by locally installed models.
@@ -123,6 +128,10 @@ pub enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value_t = 11434)]
         port: u16,
+        /// Applied to every model the server loads (models without MTP layers,
+        /// or incompatible with the draft model, decode normally)
+        #[command(flatten)]
+        options: ModelOptions,
     },
     /// Bench model generation
     Bench {
@@ -130,10 +139,83 @@ pub enum Commands {
         name: String,
         #[arg(short, long)]
         max_tokens: Option<u64>,
+        #[command(flatten)]
+        options: ModelOptions,
     },
     /// Embedding generation
     Embed {
         /// The name of the model to run
         name: String,
     },
+    /// Hugging Face Hub: search GGUF models, list a repository's
+    /// quantizations, and pull them (into the Hugging Face cache)
+    Hf {
+        #[command(subcommand)]
+        command: HfCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HfCommands {
+    /// Search model repositories (with GGUF files, unless --all)
+    Search {
+        /// Text to look for in repository names
+        query: Option<String>,
+        /// Only the repositories of this user or organization
+        #[arg(long)]
+        author: Option<String>,
+        /// Maximum number of results
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+        /// Order of the results
+        #[arg(long, value_enum, default_value_t = HfSort::Downloads)]
+        sort: HfSort,
+        /// Include repositories without GGUF files
+        #[arg(long)]
+        all: bool,
+    },
+    /// List the GGUF quantizations of a repository
+    Files {
+        /// The repository, `<owner>/<name>` (an `hf.co/` prefix is accepted)
+        repo: String,
+    },
+    /// Pull a GGUF model, like `skelm pull hf.co/<owner>/<name>[:<quantization>]`
+    Pull {
+        /// `<owner>/<name>[:<quantization>]` (an `hf.co/` prefix is accepted)
+        name: String,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum HfSort {
+    Downloads,
+    Likes,
+    Trending,
+    Updated,
+}
+
+/// LoRA adapters and speculative decoding
+#[derive(Args, Debug, Clone, Default)]
+pub struct ModelOptions {
+    /// LoRA adapter (GGUF file) to apply, as `PATH` or `PATH:SCALE` (default
+    /// scale 1.0); repeat for several adapters
+    #[arg(long = "lora", value_name = "PATH[:SCALE]")]
+    pub lora: Vec<String>,
+    /// Speculative decoding with a draft model: a smaller model sharing the
+    /// model's vocabulary, as a model name or a GGUF path
+    #[arg(long, value_name = "MODEL")]
+    pub draft_model: Option<String>,
+    /// Speculative decoding with the model's own MTP (multi-token prediction)
+    /// layers, for models that have them (Qwen3.5, Qwen3-Next, GLM-4.5, ...)
+    #[arg(long, conflicts_with = "draft_model")]
+    pub mtp: bool,
+    /// Maximum number of tokens drafted per speculative round
+    #[arg(long, default_value_t = 3)]
+    pub draft_max: usize,
+    /// Minimum number of drafted tokens for a draft to be verified
+    #[arg(long, default_value_t = 0)]
+    pub draft_min: usize,
+    /// Stop drafting when the drafter's confidence drops below this probability
+    #[arg(long, default_value_t = 0.0)]
+    pub draft_p_min: f32,
 }

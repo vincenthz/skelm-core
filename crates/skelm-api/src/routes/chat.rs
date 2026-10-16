@@ -45,7 +45,7 @@ pub async fn chat_completions(
             let _permit = permit;
             let prompt = model.model_template_render(&params);
             let prompt_tokens = model.vocab.tokenize(prompt.as_bytes(), true).len();
-            let mut context = model.new_context();
+            let mut context = model.try_new_context()?;
             let cancel = AtomicBool::new(false);
             let out = generate(&mut context, &prompt, &cfg, &cancel, |_| {})?;
             Ok((out, prompt_tokens))
@@ -131,7 +131,14 @@ fn stream_chat(
         }
 
         let prompt = model.model_template_render(&params);
-        let mut context = model.new_context();
+        let mut context = match model.try_new_context() {
+            Ok(context) => context,
+            Err(e) => {
+                tracing::error!("chat stream context creation failed: {e}");
+                tx.done();
+                return;
+            }
+        };
         let cancel = AtomicBool::new(false);
 
         let result = generate(&mut context, &prompt, &cfg, &cancel, |chunk| {

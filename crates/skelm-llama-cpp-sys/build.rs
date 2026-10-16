@@ -308,6 +308,8 @@ fn main() {
     ] {
         println!("cargo:rerun-if-env-changed={var}");
     }
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=shim");
 
     // Report which accelerator backends were requested / detected and decide
     // whether we can build one. Anything other than CPU/Metal/BLAS currently
@@ -751,6 +753,7 @@ fn bindings(lib_path: &Path, out_path: &Path) {
         .header(llama_include_path.join("llama.h").to_string_lossy())
         .allowlist_function("llama_.*")
         .allowlist_type("llama_.*")
+        .allowlist_var("LLAMA_.*")
         .clang_arg(format!("-I{}", ggml_include_path.display()))
         .derive_debug(true)
         .derive_copy(false)
@@ -1306,6 +1309,8 @@ fn lib_llama(lib_path: &Path, out_path: &Path, target: &Target, ggml_objects: Ve
     cpp.objects(ggml_objects);
     cpp.files(cpp_files.into_iter().map(|f| src_path.join(f)));
     cpp.files(model_files);
+    // C ABI wrappers over the staging `llama-ext.h` API (see shim/)
+    cpp.file("shim/skelm-llama-ext.cpp");
 
     cpp.compile("llama");
 }

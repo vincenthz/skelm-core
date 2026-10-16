@@ -1,14 +1,20 @@
 use skelm_llama_cpp_sys::llama;
 use thiserror::Error;
 
-use crate::{Model, Sampler, Vocab, batch::Batch, token::Token};
+use crate::speculative::{Speculative, Step};
+use crate::{LoraAdapter, Model, Sampler, Vocab, batch::Batch, token::Token};
 
+// Field order matters: fields are dropped in declaration order, and the draft
+// context of `speculative` (an MTP context references this one), then this
+// context, must be freed before the adapters and the model they use.
 #[allow(dead_code)]
 pub struct Context {
+    pub(crate) speculative: Option<Box<Speculative>>,
+    pub(crate) ptr: ContextPtr,
+    pub(crate) lora_adapters: Vec<LoraAdapter>,
     pub(crate) model: Model,
     pub(crate) tokens: usize,
     pub(crate) context_params: llama::llama_context_params,
-    pub(crate) ptr: ContextPtr,
 }
 
 unsafe impl Send for Context {}
@@ -149,7 +155,7 @@ impl Default for ContextParams {
 }
 
 impl ContextParams {
-    fn as_c(&self) -> llama::llama_context_params {
+    pub(crate) fn as_c(&self) -> llama::llama_context_params {
         let mut context = unsafe { llama::llama_context_default_params() };
         context.n_ctx = self.n_ctx;
         context.n_batch = self.n_batch;
@@ -180,6 +186,20 @@ pub enum DecodeError {
     UnspecifiedWarning(#[allow(dead_code)] i32),
     #[error("Fatal Decode Error {0}")]
     FatalError(#[allow(dead_code)] i32),
+}
+
+impl DecodeError {
+    /// Map a `llama_decode` / `llama_process` return value
+    pub(crate) fn check(ret: i32) -> Result<(), DecodeError> {
+        match ret {
+            0 => Ok(()),
+            1 => Err(DecodeError::CannotFindKVSlot),
+            2 => Err(DecodeError::Aborted),
+            -1 => Err(DecodeError::InvalidBatch),
+            _ if ret > 0 => Err(DecodeError::UnspecifiedWarning(ret)),
+            _ => Err(DecodeError::FatalError(ret)),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -240,18 +260,27 @@ impl From<llama::llama_pooling_type> for PoolingType {
 
 impl Context {
     pub fn new(model: Model, params: &ContextParams) -> Result<Self, ContextCreateError> {
-        let c_params = params.as_c();
-        let c_params_clone = params.as_c();
+        Self::new_from_c(model, params.as_c())
+    }
+
+    pub(crate) fn new_from_c(
+        model: Model,
+        c_params: llama::llama_context_params,
+    ) -> Result<Self, ContextCreateError> {
+        // a plain C struct, bindgen just doesn't derive Copy for it
+        let context_params = unsafe { std::ptr::read(&c_params) };
         let ctx = unsafe { llama::llama_init_from_model(model.ptr.0, c_params) };
         if ctx.is_null() {
             return Err(ContextCreateError);
         }
 
         Ok(Self {
+            speculative: None,
+            ptr: ContextPtr(ctx),
+            lora_adapters: Vec::new(),
             model,
             tokens: 0,
-            context_params: c_params_clone,
-            ptr: ContextPtr(ctx),
+            context_params,
         })
     }
 
@@ -312,20 +341,60 @@ impl Context {
         }
     }
 
-    fn decode(&self, batch: &Batch) -> Result<(), DecodeError> {
-        let b = batch.dup_batch();
-        let ret = unsafe { llama::llama_decode(self.ptr.0, b) };
-        match ret {
-            0 => Ok(()),
-            1 => Err(DecodeError::CannotFindKVSlot),
-            2 => Err(DecodeError::Aborted),
-            -1 => Err(DecodeError::InvalidBatch),
-            _ if ret > 0 => Err(DecodeError::UnspecifiedWarning(ret)),
-            _ => Err(DecodeError::FatalError(ret)),
+    /// Remove the tokens at positions `p0..p1` (`p1 = None`: to the end) of the
+    /// sequence from the memory. Returns false if a partial removal is not
+    /// supported by the memory (e.g. a recurrent model).
+    pub fn memory_seq_rm(&self, p0: usize, p1: Option<usize>) -> bool {
+        let p0 = i32::try_from(p0).expect("valid position");
+        let p1 = p1.map_or(-1, |p| i32::try_from(p).expect("valid position"));
+        unsafe {
+            let memory = llama::llama_get_memory(self.ptr.0);
+            llama::llama_memory_seq_rm(memory, 0, p0, p1)
         }
     }
 
+    /// Number of tokens in the context (the next position)
+    pub fn n_past(&self) -> usize {
+        self.tokens
+    }
+
+    /// Number of recurrent-state snapshots kept for rollback (0 if not supported)
+    pub(crate) fn n_rs_seq(&self) -> usize {
+        unsafe { llama::llama_n_rs_seq(self.ptr.0) as usize }
+    }
+
+    /// Save the partial state (recurrent / SWA caches) of the sequence
+    pub(crate) fn state_seq_get_partial(&self) -> Vec<u8> {
+        let flags = llama::LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY;
+        unsafe {
+            let size = llama::llama_state_seq_get_size_ext(self.ptr.0, 0, flags);
+            let mut data = vec![0; size];
+            let written =
+                llama::llama_state_seq_get_data_ext(self.ptr.0, data.as_mut_ptr(), size, 0, flags);
+            data.truncate(written);
+            data
+        }
+    }
+
+    /// Restore a partial state saved with [`Context::state_seq_get_partial`]
+    pub(crate) fn state_seq_set_partial(&self, data: &[u8]) -> bool {
+        let flags = llama::LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY;
+        let read = unsafe {
+            llama::llama_state_seq_set_data_ext(self.ptr.0, data.as_ptr(), data.len(), 0, flags)
+        };
+        read == data.len()
+    }
+
+    pub(crate) fn decode(&self, batch: &Batch) -> Result<(), DecodeError> {
+        let b = batch.dup_batch();
+        let ret = unsafe { llama::llama_decode(self.ptr.0, b) };
+        DecodeError::check(ret)
+    }
+
     pub fn append_tokens(&mut self, tokens: &[Token]) -> Result<(), DecodeError> {
+        if self.speculative.is_some() {
+            return self.speculative_append(tokens);
+        }
         if tokens.is_empty() {
             return Ok(());
         }
@@ -345,9 +414,45 @@ impl Context {
         Ok(())
     }
 
+    /// Sample the next token from the logits of the last decoded token,
+    /// `None` at end-of-generation. The caller appends it with
+    /// [`Context::append_tokens`]; [`Context::step`] does both, and speculates
+    /// when the context was created with [`Context::new_speculative`].
     pub fn next_token<S: Sampler>(&mut self, sampler: &mut S, vocab: &Vocab) -> Option<Token> {
+        if self.speculative.is_some() {
+            // a speculative context keeps its last sampled token undecoded
+            self.speculative_flush()
+                .expect("decoding the pending speculative token");
+        }
         let new_token = sampler.sample(self, -1);
         (!vocab.is_eog(new_token)).then_some(new_token)
+    }
+
+    /// Generate the next token(s): sample from the target, append to the
+    /// context and return what was produced. A plain context produces one token
+    /// per step; a speculative one produces every token it accepted from the
+    /// drafter in this round. `eog` is set at end-of-generation, the
+    /// end-of-generation token itself is not returned nor appended.
+    pub fn step<S: Sampler>(
+        &mut self,
+        sampler: &mut S,
+        vocab: &Vocab,
+    ) -> Result<Step, DecodeError> {
+        if self.speculative.is_some() {
+            return self.speculative_step(sampler, vocab);
+        }
+        let token = sampler.sample(self, -1);
+        if vocab.is_eog(token) {
+            return Ok(Step {
+                tokens: Vec::new(),
+                eog: true,
+            });
+        }
+        self.append_tokens(&[token])?;
+        Ok(Step {
+            tokens: vec![token],
+            eog: false,
+        })
     }
 
     pub fn pooling_type(&self) -> PoolingType {

@@ -27,6 +27,8 @@ Jinja chat templates shipped inside GGUF models, including **tool calling**.
   model's output, and run an automated tool loop end-to-end (see [Tool calling](#tool-calling)).
 - 🌐 **OpenAI-compatible API** — `skelm serve` speaks the OpenAI HTTP API (chat, completions,
   embeddings, models) so existing clients work unmodified (see [OpenAI-compatible API](#openai-compatible-api)).
+- ⚡ **Speculative decoding & LoRA** — faster generation with a draft model or the model's own MTP
+  layers, and LoRA adapters applied at load time (see [Speculative decoding & LoRA](#speculative-decoding--lora)).
 
 ## Workspace layout
 
@@ -39,7 +41,7 @@ Jinja chat templates shipped inside GGUF models, including **tool calling**.
 | `skelm-llama-cpp-sys` | Builds and links llama.cpp (git submodule) |
 | `skelm-ollama` | Ollama-compatible model store and manifests |
 | `skelm-download` | Registry download client |
-| `skelm-hf` | Hugging Face support *(early stub)* |
+| `skelm-hf` | Hugging Face Hub: search, list quantizations, download GGUF models into the HF cache |
 
 ## Installation
 
@@ -89,6 +91,9 @@ SKELM_LLAMA_CPU_FLAGS="-march=x86-64-v3" cargo build --release
 ```sh
 # pull a model from the registry into ~/.ollama
 skelm pull qwen2.5:7b
+
+# ...or a GGUF from Hugging Face (into ~/.cache/huggingface/hub), see below
+skelm pull hf.co/unsloth/Qwen3.5-2B-GGUF:Q4_K_M
 
 # list installed models (optionally filtered)
 skelm list
@@ -165,6 +170,59 @@ Notes:
   request/response types under `skelm_api::protocol` let you embed the API in another service.
 
 [axum]: https://github.com/tokio-rs/axum
+
+## Hugging Face models
+
+GGUF models on the Hugging Face Hub are named as with Ollama,
+`hf.co/<owner>/<repo>[:<quantization>]`, and can be used wherever a model name is expected
+(`run`, `bench`, `serve` requests, `--draft-model`, ...) once pulled:
+
+```sh
+# find GGUF repositories, and list the quantizations of one
+skelm hf search qwen3.5 --sort trending
+skelm hf files unsloth/Qwen3.5-2B-GGUF
+
+# download a quantization (Q4_K_M when none is given), then run it
+skelm pull hf.co/unsloth/Qwen3.5-2B-GGUF:Q8_0
+skelm run hf.co/unsloth/Qwen3.5-2B-GGUF:Q8_0
+
+# pulled models appear in `skelm list`, and are removed with `skelm remove`
+skelm remove hf.co/unsloth/Qwen3.5-2B-GGUF:Q8_0
+```
+
+Files are stored in the standard Hugging Face cache (`~/.cache/huggingface/hub`, shared with
+`huggingface-cli`, transformers, etc.), downloads resume after an interruption and are checked
+against their sha256. Split GGUFs (`-00001-of-0000N`) are downloaded whole. The usual variables
+apply: `HF_TOKEN` (or the token saved by `huggingface-cli login`) for gated / private
+repositories, `HF_HOME` / `HF_HUB_CACHE` for the cache location, and `HF_ENDPOINT` for a mirror.
+
+## Speculative decoding & LoRA
+
+`run`, `orchestrate`, `bench` and `serve` share these options:
+
+```sh
+# speculative decoding with a small draft model sharing the model's vocabulary
+skelm run qwen2.5:7b --draft-model qwen2.5:0.5b --draft-max 8 --draft-p-min 0.75
+
+# speculative decoding with the model's own MTP (multi-token prediction) layers,
+# for models trained with them (Qwen3.5, Qwen3-Next, GLM-4.5, DeepSeek, ...)
+skelm bench ./Qwen3.5-2B-MTP-Q8_0.gguf --mtp
+
+# apply LoRA adapters (GGUF), optionally scaled; repeat --lora for several
+skelm run qwen2.5:7b --lora ./my-adapter.gguf:0.8
+```
+
+The drafter proposes up to `--draft-max` tokens (default 3), and the model checks them all in a
+single batch, keeping the drafts for as long as its own sampler agrees with them. The output is
+the same as without speculative decoding: only the speed changes, depending on how often the
+drafts are accepted (`bench` reports the acceptance rate). `--draft-p-min` stops a draft when the
+drafter gets unsure, which usually pays off with draft models.
+
+Drafts are rolled back by removing them from the model's memory, or, for hybrid / recurrent models
+that cannot do that, with recurrent-state snapshots or checkpoints of the state.
+
+For `serve`, the options apply to every model the server loads; models without MTP layers, or
+whose vocabulary doesn't match the draft model, decode normally.
 
 ## Tool calling
 

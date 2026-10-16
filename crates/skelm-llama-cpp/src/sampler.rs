@@ -214,7 +214,7 @@ impl Sampler for SamplerGreedy {
 
     fn apply(&mut self, array: &mut TokenDataArray) {
         let mut sel = 0;
-        let mut max = 0.0;
+        let mut max = f32::NEG_INFINITY;
         for (i, d) in array.data.iter().enumerate() {
             if d.logit() > max {
                 max = d.logit();

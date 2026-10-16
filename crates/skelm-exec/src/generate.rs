@@ -53,17 +53,18 @@ impl Context {
 
         let mut generated: Vec<u8> = Vec::new();
         while !cancel.load(Ordering::Relaxed) {
-            match context.next_token(sampler, &vocab) {
-                None => break,
-                Some(t) => {
-                    context.append_tokens(&[t])?;
-                    if vocab.token_attr(t).is_control() {
-                        continue;
-                    }
-                    let bytes = vocab.as_bytes(t);
-                    on_token(&bytes);
-                    generated.extend_from_slice(&bytes);
+            // one token, or several with speculative decoding
+            let step = context.step(sampler, &vocab)?;
+            for t in step.tokens {
+                if vocab.token_attr(t).is_control() {
+                    continue;
                 }
+                let bytes = vocab.as_bytes(t);
+                on_token(&bytes);
+                generated.extend_from_slice(&bytes);
+            }
+            if step.eog {
+                break;
             }
         }
 

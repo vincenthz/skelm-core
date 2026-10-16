@@ -13,6 +13,7 @@ description = "Skelm abstraction for running language model in various mode"
 [dependencies]
 skelm-ollama.workspace = true
 skelm-llama-cpp.workspace = true
+skelm-hf.workspace = true
 # template-jinja disabled for now, kept in tree for later use
 #template-jinja.workspace = true
 thiserror.workspace = true

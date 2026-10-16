@@ -37,7 +37,7 @@ impl HttpError {
 /// (...)`); the actionable cause — DNS failure, TLS error, connection refused,
 /// an OS errno, a timeout — lives in the `source()` chain. This surfaces the URL,
 /// a classification, any HTTP status, and that whole chain.
-pub(crate) fn describe_reqwest_error(err: &reqwest::Error) -> String {
+pub fn describe_reqwest_error(err: &reqwest::Error) -> String {
     use std::error::Error;
 
     let mut parts = Vec::new();

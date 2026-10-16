@@ -31,7 +31,7 @@ use axum::Router;
 use axum::routing::{get, post};
 
 pub use error::ApiError;
-pub use state::AppState;
+pub use state::{AppState, DraftSource, ServeOptions};
 
 /// Build the API router with the given shared state.
 pub fn router(state: AppState) -> Router {
@@ -52,7 +52,12 @@ async fn health() -> &'static str {
 
 /// Bind the API to `addr` and serve until the process is stopped.
 pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
-    let app = router(AppState::new());
+    serve_with(addr, ServeOptions::default()).await
+}
+
+/// Like [`serve`], with LoRA adapters / speculative decoding applied to every model
+pub async fn serve_with(addr: SocketAddr, options: ServeOptions) -> anyhow::Result<()> {
+    let app = router(AppState::with_options(options));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("skelm OpenAI-compatible API listening on http://{addr}");
     axum::serve(listener, app).await?;

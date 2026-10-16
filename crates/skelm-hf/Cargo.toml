@@ -8,6 +8,16 @@ keywords.workspace = true
 categories.workspace = true
 license.workspace = true
 rust-version.workspace = true
+description = "skelm Hugging Face Hub support: search, list and download GGUF models"
 
 [dependencies]
-hf-hub = "0.4"
+skelm-download.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+
+reqwest = { version = "0.12", features = ["stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+hex = "0.4"
+cryptoxide = "0.5"

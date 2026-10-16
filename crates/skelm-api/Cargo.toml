@@ -12,6 +12,7 @@ description = "OpenAI-compatible HTTP API for skelm, served with axum"
 
 [dependencies]
 skelm-exec.workspace = true
+skelm-hf.workspace = true
 skelm-ollama.workspace = true
 skelm-llama-cpp.workspace = true
 tokio.workspace = true

@@ -16,7 +16,7 @@ unsafe impl Sync for Vocab {}
 
 pub struct VocabPtr(pub(crate) *const llama::llama_vocab);
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VocabType {
     SPM,
     BPE,
@@ -185,5 +185,16 @@ impl Vocab {
 
     pub fn is_eog(&self, token: Token) -> bool {
         unsafe { llama::llama_vocab_is_eog(self.ptr.0, token.0) }
+    }
+
+    /// The text of a token as stored in the vocabulary (not detokenized)
+    pub fn text(&self, token: Token) -> Option<String> {
+        unsafe {
+            let ptr = llama::llama_vocab_get_text(self.ptr.0, token.0);
+            if ptr.is_null() {
+                return None;
+            }
+            Some(std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned())
+        }
     }
 }

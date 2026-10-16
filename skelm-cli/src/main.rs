@@ -19,7 +19,9 @@ use skelm_ollama::{OllamaConfig, OllamaStore};
 use reqwest::ClientBuilder;
 
 mod args;
+mod hf;
 mod human;
+mod options;
 mod progressbar;
 mod run;
 
@@ -49,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
             tool_exec,
             max_tool_iters,
             output,
+            options,
         } => {
             cmd_run(
                 name,
@@ -61,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
                 tool_exec,
                 max_tool_iters,
                 output,
+                options,
             )
             .await
         }
@@ -75,17 +79,27 @@ async fn main() -> anyhow::Result<()> {
             max_steps,
             max_agents,
             max_depth,
+            options,
         } => {
             cmd_orchestrate(
                 name, debug, model_path, system, input, tools, tool_exec, max_steps, max_agents,
-                max_depth,
+                max_depth, options,
             )
             .await
         }
         args::Commands::Info { name } => cmd_info(name).await,
-        args::Commands::Serve { host, port } => cmd_serve(host, port).await,
-        args::Commands::Bench { name, max_tokens } => cmd_bench(name, max_tokens).await,
+        args::Commands::Serve {
+            host,
+            port,
+            options,
+        } => cmd_serve(host, port, options).await,
+        args::Commands::Bench {
+            name,
+            max_tokens,
+            options,
+        } => cmd_bench(name, max_tokens, options).await,
         args::Commands::Embed { name } => cmd_embed(name).await,
+        args::Commands::Hf { command } => hf::cmd_hf(command).await,
     }
 }
 
@@ -138,7 +152,7 @@ async fn cmd_info(name: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_serve(host: String, port: u16) -> anyhow::Result<()> {
+async fn cmd_serve(host: String, port: u16, options: args::ModelOptions) -> anyhow::Result<()> {
     use std::net::{IpAddr, SocketAddr};
 
     let ip: IpAddr = host
@@ -150,7 +164,7 @@ async fn cmd_serve(host: String, port: u16) -> anyhow::Result<()> {
     run::llama_init_logging(false);
     tracing_subscriber::fmt::init();
 
-    skelm_api::serve(addr).await
+    skelm_api::serve_with(addr, options::serve_options(&options)?).await
 }
 
 async fn cmd_embed(name: String) -> anyhow::Result<()> {
@@ -173,16 +187,20 @@ async fn cmd_embed(name: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_bench(name: String, max_tokens: Option<u64>) -> anyhow::Result<()> {
+async fn cmd_bench(
+    name: String,
+    max_tokens: Option<u64>,
+    options: args::ModelOptions,
+) -> anyhow::Result<()> {
     let model_descr = parse_model_descr(&name)?;
 
     let max_tokens = max_tokens.unwrap_or(u64::MAX);
 
     run::llama_init_logging(false);
 
-    let model = skelm_exec::Model::load(&model_descr)?;
+    let model = options::load_model(&model_descr, &options)?;
 
-    let mut context = model.new_context().1;
+    let mut context = model.try_new_context()?.1;
     let vocab = model.vocab;
 
     const BENCHMARK_CONTEXT: &str = "this is a context for doing tokens benchmarks";
@@ -203,17 +221,13 @@ async fn cmd_bench(name: String, max_tokens: Option<u64>) -> anyhow::Result<()> 
         .progress_chars("##-"),
     );
 
-    loop {
-        match context.next_token(&mut sampler, &vocab) {
-            None => break,
-            Some(t) => {
-                context.append_tokens(&[t])?;
-                token_generated += 1;
-                bar.set_position(token_generated);
-                if token_generated >= max_tokens {
-                    break;
-                }
-            }
+    while token_generated < max_tokens {
+        // one token, or several with speculative decoding
+        let step = context.step(&mut sampler, &vocab)?;
+        token_generated += step.tokens.len() as u64;
+        bar.set_position(token_generated);
+        if step.eog {
+            break;
         }
     }
 
@@ -234,6 +248,15 @@ async fn cmd_bench(name: String, max_tokens: Option<u64>) -> anyhow::Result<()> 
     println!("elapsed            : {}", bench_duration_units(dur));
     println!("tokens per seconds : {:.4}", tps);
     println!("time per token     : {}", time_token);
+    if let Some(stats) = context.speculative_stats() {
+        println!(
+            "draft acceptance   : {:.1}% ({} of {} drafted tokens, {} rounds)",
+            stats.acceptance_rate() * 100.0,
+            stats.accepted,
+            stats.drafted,
+            stats.rounds
+        );
+    }
 
     Ok(())
 }
@@ -249,13 +272,14 @@ async fn cmd_run(
     tool_exec: Option<String>,
     max_tool_iters: usize,
     output: Option<String>,
+    options: args::ModelOptions,
 ) -> anyhow::Result<()> {
     const DEFAULT_SYSTEM_PROMPT: &str = "you are a chatbot answering question";
 
     let model_descr = if model_path {
         ModelDescr::Path(PathBuf::from(name))
     } else {
-        ModelDescr::Ollama(ollama::ModelDescr::from_str(&name).unwrap())
+        parse_model_descr(&name)?
     };
 
     let input_data = if let Some(input_file) = input {
@@ -302,7 +326,7 @@ async fn cmd_run(
     run::llama_init_logging(debug);
     tracing_subscriber::fmt::init();
 
-    let model = skelm_exec::Model::load(&model_descr)?;
+    let model = options::load_model(&model_descr, &options)?;
 
     let mut parameters = ModelParameters::single_turn(system, prompt);
     parameters.tools = tools;
@@ -380,6 +404,7 @@ async fn cmd_orchestrate(
     max_steps: usize,
     max_agents: usize,
     max_depth: usize,
+    options: args::ModelOptions,
 ) -> anyhow::Result<()> {
     const DEFAULT_SYSTEM_PROMPT: &str = "You are an orchestrator. Break the task into \
         self-contained pieces and use the `delegate` tool to hand each to a specialist \
@@ -388,7 +413,7 @@ async fn cmd_orchestrate(
     let model_descr = if model_path {
         ModelDescr::Path(PathBuf::from(name))
     } else {
-        ModelDescr::Ollama(ollama::ModelDescr::from_str(&name).unwrap())
+        parse_model_descr(&name)?
     };
 
     let prompt = if let Some(input_file) = input {
@@ -439,7 +464,7 @@ async fn cmd_orchestrate(
     run::llama_init_logging(debug);
     tracing_subscriber::fmt::init();
 
-    let model = skelm_exec::Model::load(&model_descr)?;
+    let model = options::load_model(&model_descr, &options)?;
     let limits = Limits {
         budget_steps: max_steps,
         max_agents,
@@ -520,12 +545,20 @@ async fn cmd_list(filter: Option<String>) -> anyhow::Result<()> {
         }
     }
 
+    model_lines.extend(hf::list_lines(now, filter.as_deref()));
+
     model_lines.sort_by(|(_, _, m1), (_, _, m2)| m1.cmp(m2));
 
-    println!("{:40} {:15} {:15}", "NAME", "SIZE", "MODIFIED");
+    let width = model_lines
+        .iter()
+        .map(|(name, _, _)| name.len())
+        .max()
+        .unwrap_or(0)
+        .max(40);
+    println!("{:width$} {:15} {:15}", "NAME", "SIZE", "MODIFIED");
     for (model_name, size, modified) in model_lines {
         println!(
-            "{:40} {:15} {:15}",
+            "{:width$} {:15} {:15}",
             model_name,
             human::size_units(size),
             format!("{} ago", human::duration_units(modified)),
@@ -535,6 +568,9 @@ async fn cmd_list(filter: Option<String>) -> anyhow::Result<()> {
 }
 
 async fn cmd_pull(name: String) -> anyhow::Result<()> {
+    if skelm_hf::HfModelRef::is_hf_name(&name) {
+        return hf::pull(&name.parse()?).await;
+    }
     let model_descr = parse_ollama_descr(&name)?;
 
     let store = OllamaStore::default();
@@ -569,8 +605,12 @@ async fn cmd_pull(name: String) -> anyhow::Result<()> {
 }
 
 async fn cmd_remove(name: String) -> anyhow::Result<()> {
-    let skelm_exec::ModelDescr::Ollama(model_descr) = parse_model_descr(&name)? else {
-        anyhow::bail!("ollama invalid name")
+    let model_descr = match parse_model_descr(&name)? {
+        skelm_exec::ModelDescr::Ollama(model_descr) => model_descr,
+        skelm_exec::ModelDescr::Hf(model) => return hf::remove(&model),
+        skelm_exec::ModelDescr::Path(_) => {
+            anyhow::bail!("{name} is a file, not an installed model")
+        }
     };
     let store = OllamaStore::default();
     store.remove_manifest(
@@ -634,8 +674,7 @@ fn parse_ollama_descr(name: &str) -> anyhow::Result<ollama::ModelDescr> {
     })
 }
 
+/// A model name (Ollama or `hf.co/...`), or the path of a GGUF file
 fn parse_model_descr(name: &str) -> anyhow::Result<skelm_exec::ModelDescr> {
-    ollama::ModelDescr::from_str(name).map_err(|_| {
-        anyhow::anyhow!("Invalid Ollama model description: expecting <registry>/<model>:<variant> or <model>:<variant>")
-    }).map(skelm_exec::ModelDescr::Ollama)
+    skelm_exec::ModelDescr::parse(name).map_err(|e| anyhow::anyhow!(e))
 }

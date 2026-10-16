@@ -36,6 +36,7 @@ resolver = "2"
 skelm-download = { version = "0.1", path = "crates/skelm-download" }
 skelm-api = { version = "0.1", path = "crates/skelm-api" }
 skelm-exec = { version = "0.1", path = "crates/skelm-exec" }
+skelm-hf = { version = "0.1", path = "crates/skelm-hf" }
 skelm-llama-cpp-sys = { version = "0.1", path = "crates/skelm-llama-cpp-sys" }
 skelm-llama-cpp = { version = "0.1", path = "crates/skelm-llama-cpp" }
 skelm-ollama = { version = "0.1", path = "crates/skelm-ollama" }
