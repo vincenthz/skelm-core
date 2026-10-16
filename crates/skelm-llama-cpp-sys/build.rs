@@ -36,11 +36,17 @@ use cc::Build;
 // ---------------------------------------------------------------------------
 
 const GGML_VERSION_MAJOR: u64 = 0;
-const GGML_VERSION_MINOR: u64 = 13;
+const GGML_VERSION_MINOR: u64 = 27;
 const GGML_VERSION_PATCH: u64 = 0;
-const GGML_COMMIT: &str = "\"35c9b1f3\"";
+const GGML_COMMIT: &str = "e707790c";
 #[allow(unused)]
-const GGML_COMMIT_LONG: &str = "35c9b1f39ebe5a7bb83986d64415a079218be78d";
+const GGML_COMMIT_LONG: &str = "e707790c73590c2ff5303045b714afb0c5e22035";
+
+// llama.cpp version metadata (from the top-level CMakeLists.txt; LLAMA_BUILD_IS_DEV
+// defaults to ON upstream, hence the `-dev` suffix)
+const LLAMA_VERSION_MAJOR: u64 = 0;
+const LLAMA_VERSION_MINOR: u64 = 7;
+const LLAMA_VERSION_PATCH: u64 = 0;
 
 fn ggml_version() -> String {
     format!(
@@ -49,11 +55,47 @@ fn ggml_version() -> String {
     )
 }
 
+fn llama_version() -> String {
+    format!(
+        "{}.{}.{}-dev",
+        LLAMA_VERSION_MAJOR, LLAMA_VERSION_MINOR, LLAMA_VERSION_PATCH
+    )
+}
+
+/// Generate `ggml-version.h` and `llama-version.h` into `out_path`, mirroring
+/// the `configure_file(*-version.h.in ...)` calls of the upstream CMake.
+fn version_headers(lib_path: &Path, out_path: &Path) {
+    let headers = [
+        (
+            lib_path.join("ggml/src/ggml-version.h.in"),
+            "ggml-version.h",
+            [
+                ("@GGML_VERSION@", ggml_version()),
+                ("@GGML_BUILD_COMMIT@", GGML_COMMIT.to_string()),
+            ],
+        ),
+        (
+            lib_path.join("src/llama-version.h.in"),
+            "llama-version.h",
+            [
+                ("@LLAMA_VERSION@", llama_version()),
+                ("@LLAMA_BUILD_COMMIT@", GGML_COMMIT.to_string()),
+            ],
+        ),
+    ];
+    for (template, name, substs) in headers {
+        let mut data = std::fs::read_to_string(&template)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", template.display()));
+        for (from, to) in substs {
+            data = data.replace(from, &to);
+        }
+        std::fs::write(out_path.join(name), data).expect("cannot write version header");
+    }
+}
+
 /// Defines shared by the ggml and llama compilation units.
 fn base_defines(b: &mut Build, target: &Target) {
     b.define("GGML_SCHED_MAX_COPIES", "4");
-    b.define("GGML_VERSION", Some(format!("\"{}\"", ggml_version()).as_str()));
-    b.define("GGML_COMMIT", GGML_COMMIT);
     b.define("GGML_USE_CPU", None);
 
     // GGML_SHARED/GGML_BUILD select the symbol-visibility macro in the public
@@ -248,12 +290,13 @@ fn main() {
     report_backends(&target);
 
     bindings(&lib_path, &out_path);
+    version_headers(&lib_path, &out_path);
 
     // Metal is the one GPU backend we actually build, and only on Apple.
     let use_metal = target.is_macos() && metal_wanted(&target);
 
     let ggml_objects = lib_ggml(&lib_path, &out_path, &target, use_metal);
-    lib_llama(&lib_path, &target, ggml_objects);
+    lib_llama(&lib_path, &out_path, &target, ggml_objects);
 }
 
 // ---------------------------------------------------------------------------
@@ -603,6 +646,7 @@ fn cpu_arch_config(target: &Target) -> CpuArchConfig {
         }
         Arch::S390x => {
             cfg.c_files.push("arch/s390/quants.c");
+            cfg.cpp_files.push("arch/s390/repack.cpp");
             cfg.flags = flag_override.unwrap_or_else(|| {
                 vec!["-march=native".to_string(), "-mtune=native".to_string()]
             });
@@ -660,6 +704,8 @@ fn lib_ggml(lib_path: &Path, out_path: &Path, target: &Target, use_metal: bool) 
     let mut common = Build::new();
     common.include(&include_path);
     common.include(&src_path);
+    // generated ggml-version.h
+    common.include(out_path);
     common.opt_level(3);
     common.flags(&warn.common);
 
@@ -695,6 +741,8 @@ fn lib_ggml(lib_path: &Path, out_path: &Path, target: &Target, use_metal: bool) 
             "traits.cpp",
             "amx/amx.cpp",
             "amx/mmq.cpp",
+            "tiled/tiled.cpp",
+            "tiled/tiled-kernel.cpp",
             "binary-ops.cpp",
             "unary-ops.cpp",
             "vec.cpp",
@@ -747,52 +795,14 @@ fn lib_ggml(lib_path: &Path, out_path: &Path, target: &Target, use_metal: bool) 
             "ggml-metal.cpp",
             "ggml-metal-device.cpp",
             "ggml-metal-common.cpp",
+            "ggml-metal-fusion.cpp",
             "ggml-metal-ops.cpp",
+            "ggml-metal-tuning.cpp",
         ];
 
         cpp.define("GGML_METAL_EMBED_LIBRARY", None);
 
-        let ggml_common_h_path = src_path.join("ggml-common.h");
-        let ggml_common_h_data = std::fs::read_to_string(ggml_common_h_path).unwrap();
-
-        let ggml_metal_impl_h_path = backend_dir.join("ggml-metal-impl.h");
-        let ggml_metal_impl_h_data = std::fs::read_to_string(ggml_metal_impl_h_path).unwrap();
-
-        let embed_file_name = "ggml-metal-embed.s";
-
-        let metal_file = "ggml-metal.metal";
-        let metal_file_path = backend_dir.join(metal_file);
-        let metal_file_out = out_path.join(metal_file);
-
-        let metal_file_data = std::fs::read_to_string(metal_file_path).unwrap();
-
-        let replace_embed_ggml = "__embed_ggml-common.h__\n";
-        let replace_ggml_metal = "#include \"ggml-metal-impl.h\"\n";
-
-        let metal_file_data = metal_file_data
-            .replace(replace_embed_ggml, &ggml_common_h_data)
-            .replace(replace_ggml_metal, &ggml_metal_impl_h_data);
-
-        let mut out_metal_file = std::fs::File::create(&metal_file_out).unwrap();
-        out_metal_file
-            .write_all(metal_file_data.as_bytes())
-            .unwrap();
-
-        let prefix = r#".section __DATA,__ggml_metallib
-.globl _ggml_metallib_start
-_ggml_metallib_start:
-"#;
-        let suffix = r#".globl _ggml_metallib_end
-_ggml_metallib_end:
-"#;
-
-        let embed_file_path = out_path.join(embed_file_name);
-        let mut out_embed_file = std::fs::File::create(&embed_file_path).unwrap();
-
-        let embed_path = format!(".incbin \"{}\"\n", metal_file_out.display());
-        out_embed_file.write_all(prefix.as_bytes()).unwrap();
-        out_embed_file.write_all(embed_path.as_bytes()).unwrap();
-        out_embed_file.write_all(suffix.as_bytes()).unwrap();
+        let embed_file_path = metal_embed_library(&src_path, &backend_dir, out_path);
 
         let mut s = common.clone();
         s.cpp(false).std("c11");
@@ -823,16 +833,155 @@ _ggml_metallib_end:
     all
 }
 
+/// The per-op Metal libraries, in the order of `METALLIB_KERNEL_SOURCES` in
+/// `ggml/src/ggml-metal/CMakeLists.txt` (and `GGML_METAL_LIBS` in
+/// `ggml-metal-device.m`, which references one start/end symbol pair per kind).
+const METAL_KERNELS: [&str; 36] = [
+    "fa_aux",
+    "fa_f16",
+    "fa_f32",
+    "fa_q4_0",
+    "fa_q4_1",
+    "fa_q5_0",
+    "fa_q5_1",
+    "fa_q8_0",
+    "fa_tensor",
+    "fa_vec_f16",
+    "fa_vec_f32",
+    "fa_vec_q4_0",
+    "fa_vec_q4_1",
+    "fa_vec_q5_0",
+    "fa_vec_q5_1",
+    "fa_vec_q8_0",
+    "mul_mv",
+    "mul_mv_mma",
+    "mul_mm",
+    "quantize",
+    "softmax",
+    "norm",
+    "unary",
+    "binbcast",
+    "reduce",
+    "tri",
+    "ssm",
+    "wkv",
+    "gated_delta_net",
+    "solve_tri",
+    "rope",
+    "conv",
+    "upscale",
+    "argsort",
+    "pool",
+    "misc",
+];
+
+/// Generate the self-contained Metal sources and the assembly file embedding
+/// them, mirroring the `GGML_METAL_EMBED_LIBRARY` branch of the upstream CMake:
+/// for each kernel, the shared headers it includes are prepended, the internal
+/// `#include`s / `#pragma once` dropped, and `ggml-common.h` /
+/// `ggml-metal-impl.h` inlined. Returns the path of the assembly file.
+fn metal_embed_library(src_path: &Path, backend_dir: &Path, out_path: &Path) -> PathBuf {
+    let read = |p: PathBuf| {
+        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()))
+    };
+    let kernels_dir = backend_dir.join("kernels");
+
+    let ggml_common_h = read(src_path.join("ggml-common.h"));
+    let ggml_metal_impl_h = read(backend_dir.join("ggml-metal-impl.h"));
+
+    let common_h = read(kernels_dir.join("common.h"));
+    let dequantize_h = read(kernels_dir.join("dequantize.h"));
+    let quantize_h = read(kernels_dir.join("quantize.h"));
+    let fa_common = read(kernels_dir.join("fa_common.metal"));
+    let fa_vec_common = read(kernels_dir.join("fa_vec_common.metal"));
+
+    let stripped = [
+        "#include \"common.h\"",
+        "#include \"dequantize.h\"",
+        "#include \"quantize.h\"",
+        "#include \"fa_common.metal\"",
+        "#include \"fa_vec_common.metal\"",
+        "#pragma once",
+    ];
+
+    // replace every line containing `marker` by `content` (sed `/marker/r file` + `/marker/d`)
+    let inline = |data: &str, marker: &str, content: &str| -> String {
+        let mut res = String::with_capacity(data.len() + content.len());
+        for line in data.lines() {
+            if line.contains(marker) {
+                res.push_str(content);
+            } else {
+                res.push_str(line);
+                res.push('\n');
+            }
+        }
+        res
+    };
+
+    let embed_dir = out_path.join("ggml-metal-embed");
+    std::fs::create_dir_all(&embed_dir).unwrap();
+
+    let mut asm = String::new();
+    asm.push_str(".section __DATA,__ggml_metallib\n");
+
+    for kind in METAL_KERNELS {
+        let src = read(kernels_dir.join(format!("{kind}.metal")));
+
+        // only prepend headers that this source actually includes
+        let mut data = common_h.clone();
+        for (inc, hdr) in [
+            ("dequantize.h", &dequantize_h),
+            ("quantize.h", &quantize_h),
+            ("fa_common.metal", &fa_common),
+            ("fa_vec_common.metal", &fa_vec_common),
+        ] {
+            if src.contains(&format!("#include \"{inc}\"")) {
+                data.push_str(hdr);
+            }
+        }
+        data.push_str(&src);
+
+        let data: String = data
+            .lines()
+            .filter(|l| !stripped.iter().any(|s| l.contains(s)))
+            .flat_map(|l| [l, "\n"])
+            .collect();
+        let data = inline(&data, "__embed_ggml-common.h__", &ggml_common_h);
+        let data = inline(&data, "#include \"ggml-metal-impl.h\"", &ggml_metal_impl_h);
+
+        let embed_file = embed_dir.join(format!("ggml-metal-embed-{kind}.metal"));
+        std::fs::write(&embed_file, data).unwrap();
+
+        // the macOS section name is limited to 16 chars, so it is shared across
+        // kinds and only the global symbols vary
+        let sym = kind.replace('-', "_");
+        asm.push_str(&format!(
+            ".globl _ggml_metallib_{sym}_start\n\
+             _ggml_metallib_{sym}_start:\n\
+             .incbin \"{}\"\n\
+             .globl _ggml_metallib_{sym}_end\n\
+             _ggml_metallib_{sym}_end:\n",
+            embed_file.display()
+        ));
+    }
+
+    let asm_path = out_path.join("ggml-metal-embed.s");
+    let mut f = std::fs::File::create(&asm_path).unwrap();
+    f.write_all(asm.as_bytes()).unwrap();
+    asm_path
+}
+
 // ---------------------------------------------------------------------------
 // llama library
 // ---------------------------------------------------------------------------
 
-fn lib_llama(lib_path: &Path, target: &Target, ggml_objects: Vec<PathBuf>) {
+fn lib_llama(lib_path: &Path, out_path: &Path, target: &Target, ggml_objects: Vec<PathBuf>) {
     let ggml_path = lib_path.join("ggml");
     let ggml_include_path = ggml_path.join("include");
     let src_path = lib_path.join("src");
     let include_path = lib_path.join("include");
 
+    // LLAMA_CORE_SOURCES in src/CMakeLists.txt
     let cpp_files = [
         "llama.cpp",
         "llama-adapter.cpp",
@@ -848,155 +997,43 @@ fn lib_llama(lib_path: &Path, target: &Target, ggml_objects: Vec<PathBuf>) {
         "llama-io.cpp",
         "llama-kv-cache.cpp",
         "llama-kv-cache-iswa.cpp",
+        "llama-kv-cache-dsa.cpp",
+        "llama-kv-cache-dsa-iswa.cpp",
+        "llama-kv-cache-msa.cpp",
+        "llama-kv-cache-dsv4.cpp",
         "llama-memory.cpp",
+        "llama-moe-cache.cpp",
         "llama-memory-hybrid.cpp",
         "llama-memory-hybrid-iswa.cpp",
+        "llama-memory-hybrid-idx.cpp",
         "llama-memory-recurrent.cpp",
         "llama-mmap.cpp",
         "llama-model-loader.cpp",
         "llama-model-saver.cpp",
         "llama-model.cpp",
         "llama-quant.cpp",
-        "llama-vocab.cpp",
         "llama-sampler.cpp",
+        "llama-vocab.cpp",
         "unicode-data.cpp",
         "unicode.cpp",
-        "models/afmoe.cpp",
-        "models/apertus.cpp",
-        "models/arcee.cpp",
-        "models/arctic.cpp",
-        "models/arwkv7.cpp",
-        "models/baichuan.cpp",
-        "models/bailingmoe.cpp",
-        "models/bailingmoe2.cpp",
-        "models/bert.cpp",
-        "models/bitnet.cpp",
-        "models/bloom.cpp",
-        "models/chameleon.cpp",
-        "models/chatglm.cpp",
-        "models/codeshell.cpp",
-        "models/cogvlm.cpp",
-        "models/cohere2.cpp",
-        "models/command-r.cpp",
-        "models/dbrx.cpp",
-        "models/deci.cpp",
-        "models/deepseek.cpp",
-        "models/deepseek2.cpp",
-        "models/deepseek2ocr.cpp",
-        "models/delta-net-base.cpp",
-        "models/dots1.cpp",
-        "models/dream.cpp",
-        "models/ernie4-5.cpp",
-        "models/ernie4-5-moe.cpp",
-        "models/eurobert.cpp",
-        "models/exaone.cpp",
-        "models/exaone-moe.cpp",
-        "models/exaone4.cpp",
-        "models/falcon.cpp",
-        "models/falcon-h1.cpp",
-        "models/gemma.cpp",
-        "models/gemma-embedding.cpp",
-        "models/gemma2.cpp",
-        "models/gemma3.cpp",
-        "models/gemma3n.cpp",
-        "models/gemma4.cpp",
-        "models/glm-dsa.cpp",
-        "models/glm4.cpp",
-        "models/glm4-moe.cpp",
-        "models/gpt2.cpp",
-        "models/gptneox.cpp",
-        "models/granite.cpp",
-        "models/granite-hybrid.cpp",
-        "models/granite-moe.cpp",
-        "models/grok.cpp",
-        "models/grovemoe.cpp",
-        "models/hunyuan-dense.cpp",
-        "models/hunyuan-moe.cpp",
-        "models/hunyuan-vl.cpp",
-        "models/internlm2.cpp",
-        "models/jais.cpp",
-        "models/jais2.cpp",
-        "models/jamba.cpp",
-        "models/jina-bert-v2.cpp",
-        "models/jina-bert-v3.cpp",
-        "models/kimi-linear.cpp",
-        "models/lfm2.cpp",
-        "models/lfm2moe.cpp",
-        "models/llada.cpp",
-        "models/llada-moe.cpp",
-        "models/llama.cpp",
-        "models/llama-embed.cpp",
-        "models/llama4.cpp",
-        "models/maincoder.cpp",
-        "models/maincoder.cpp",
-        "models/mamba.cpp",
-        "models/mamba-base.cpp",
-        "models/mamba2.cpp",
-        "models/mimo2.cpp",
-        "models/minicpm.cpp",
-        "models/minicpm3.cpp",
-        "models/minimax-m2.cpp",
-        "models/mistral3.cpp",
-        "models/mistral4.cpp",
-        "models/modern-bert.cpp",
-        "models/mpt.cpp",
-        "models/nemotron.cpp",
-        "models/nemotron-h.cpp",
-        "models/nemotron-h-moe.cpp",
-        "models/neo-bert.cpp",
-        "models/nomic-bert.cpp",
-        "models/nomic-bert-moe.cpp",
-        "models/olmo.cpp",
-        "models/olmo2.cpp",
-        "models/olmoe.cpp",
-        "models/openai-moe.cpp",
-        "models/openelm.cpp",
-        "models/orion.cpp",
-        "models/paddleocr.cpp",
-        "models/pangu-embed.cpp",
-        "models/phi2.cpp",
-        "models/phi3.cpp",
-        "models/phimoe.cpp",
-        "models/plamo.cpp",
-        "models/plamo2.cpp",
-        "models/plamo3.cpp",
-        "models/plm.cpp",
-        "models/qwen.cpp",
-        "models/qwen2.cpp",
-        "models/qwen2moe.cpp",
-        "models/qwen2vl.cpp",
-        "models/qwen3.cpp",
-        "models/qwen3moe.cpp",
-        "models/qwen3next.cpp",
-        "models/qwen3vl.cpp",
-        "models/qwen3vlmoe.cpp",
-        "models/qwen35.cpp",
-        "models/qwen35moe.cpp",
-        "models/refact.cpp",
-        "models/rnd1.cpp",
-        "models/rwkv6.cpp",
-        "models/rwkv6-base.cpp",
-        "models/rwkv6qwen2.cpp",
-        "models/rwkv7.cpp",
-        "models/rwkv7-base.cpp",
-        "models/seed-oss.cpp",
-        "models/smallthinker.cpp",
-        "models/smollm3.cpp",
-        "models/stablelm.cpp",
-        "models/starcoder.cpp",
-        "models/starcoder2.cpp",
-        "models/step35.cpp",
-        "models/t5.cpp",
-        "models/t5encoder.cpp",
-        "models/wavtokenizer-dec.cpp",
-        "models/xverse.cpp",
     ];
+
+    // `file(GLOB LLAMA_MODELS_SOURCES "models/*.cpp")` upstream
+    let models_path = src_path.join("models");
+    let mut model_files: Vec<PathBuf> = std::fs::read_dir(&models_path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", models_path.display()))
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "cpp"))
+        .collect();
+    model_files.sort();
 
     // create a common build
     let mut common = Build::new();
     common.include(include_path);
     common.include(ggml_include_path);
     common.include(&src_path);
+    // generated llama-version.h
+    common.include(out_path);
     common.opt_level(3);
     let warn = warning_flags(target);
     common.flags(&warn.common);
@@ -1010,6 +1047,7 @@ fn lib_llama(lib_path: &Path, target: &Target, ggml_objects: Vec<PathBuf>) {
     cpp.flags(&warn.cpp_only);
     cpp.objects(ggml_objects);
     cpp.files(cpp_files.into_iter().map(|f| src_path.join(f)));
+    cpp.files(model_files);
 
     cpp.compile("llama");
 }

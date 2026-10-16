@@ -21,7 +21,7 @@ unsafe impl Sync for ModelPtr {}
 impl Drop for ModelPtr {
     fn drop(&mut self) {
         unsafe {
-            llama::llama_free_model(self.0);
+            llama::llama_model_free(self.0);
         }
     }
 }
@@ -55,7 +55,7 @@ impl Model {
     pub fn load(path: impl AsRef<Path>, params: &ModelParams) -> Result<Self, ModelLoadError> {
         let path = path.as_ref();
         let c_params = params.as_c();
-        let ret = unsafe { llama::llama_load_model_from_file(path_to_cpath(path), c_params) };
+        let ret = unsafe { llama::llama_model_load_from_file(path_to_cpath(path), c_params) };
         if ret.is_null() {
             return Err(ModelLoadError);
         }
@@ -75,7 +75,7 @@ impl Model {
     }
 
     pub fn n_ctx_train(&self) -> i32 {
-        unsafe { llama::llama_n_ctx_train(self.ptr.0) }
+        unsafe { llama::llama_model_n_ctx_train(self.ptr.0) }
     }
 
     /// Get the model type

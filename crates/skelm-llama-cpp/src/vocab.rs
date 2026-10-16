@@ -144,7 +144,7 @@ impl Vocab {
     }
 
     pub fn token_attr(&self, token: Token) -> TokenAttr {
-        unsafe { TokenAttr(llama::llama_token_get_attr(self.ptr.0, token.0) as u32) }
+        unsafe { TokenAttr(llama::llama_vocab_get_attr(self.ptr.0, token.0) as u32) }
     }
 
     pub fn vocab_type(&self) -> Option<VocabType> {
