@@ -83,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         args::Commands::Info { name } => cmd_info(name).await,
+        args::Commands::Serve { host, port } => cmd_serve(host, port).await,
         args::Commands::Bench { name, max_tokens } => cmd_bench(name, max_tokens).await,
         args::Commands::Embed { name } => cmd_embed(name).await,
     }
@@ -135,6 +136,21 @@ async fn cmd_info(name: String) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn cmd_serve(host: String, port: u16) -> anyhow::Result<()> {
+    use std::net::{IpAddr, SocketAddr};
+
+    let ip: IpAddr = host
+        .parse()
+        .with_context(|| format!("invalid bind address '{}'", host))?;
+    let addr = SocketAddr::new(ip, port);
+
+    // Keep llama.cpp quiet (model-loader lines only) and enable request logging.
+    run::llama_init_logging(false);
+    tracing_subscriber::fmt::init();
+
+    skelm_api::serve(addr).await
 }
 
 async fn cmd_embed(name: String) -> anyhow::Result<()> {

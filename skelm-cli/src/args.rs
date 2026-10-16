@@ -114,6 +114,16 @@ pub enum Commands {
         #[arg(long, default_value_t = 3)]
         max_depth: usize,
     },
+    /// Serve an OpenAI-compatible HTTP API (chat/completions, completions,
+    /// embeddings and models) backed by locally installed models.
+    Serve {
+        /// Address to bind on
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Port to listen on
+        #[arg(short, long, default_value_t = 11434)]
+        port: u16,
+    },
     /// Bench model generation
     Bench {
         /// The name of the model to run

@@ -25,12 +25,15 @@ Jinja chat templates shipped inside GGUF models, including **tool calling**.
   rendered directly (via minijinja), so prompts match what the model was trained on.
 - 🛠️ **Tool calling** — expose tools to the template, parse tool calls back out of the
   model's output, and run an automated tool loop end-to-end (see [Tool calling](#tool-calling)).
+- 🌐 **OpenAI-compatible API** — `skelm serve` speaks the OpenAI HTTP API (chat, completions,
+  embeddings, models) so existing clients work unmodified (see [OpenAI-compatible API](#openai-compatible-api)).
 
 ## Workspace layout
 
 | Crate | Purpose |
 |-------|---------|
 | `skelm-cli` | The `skelm` command-line tool |
+| `skelm-api` | OpenAI-compatible HTTP API server (axum) |
 | `skelm-exec` | High-level model loading, chat-template rendering and tool-call parsing |
 | `skelm-llama-cpp` | Safe bindings over llama.cpp (model, context, vocab, sampler) |
 | `skelm-llama-cpp-sys` | Builds and links llama.cpp (git submodule) |
@@ -110,6 +113,56 @@ skelm verify --blobs
 ```
 
 Models are stored under `~/.ollama` and pulled from `registry.ollama.ai` by default.
+
+## OpenAI-compatible API
+
+`skelm serve` exposes your locally installed models over an OpenAI-compatible HTTP API
+(built with [axum]), so existing OpenAI clients work unmodified — point them at the
+server and use your model names (exactly as `skelm list` shows them).
+
+```sh
+skelm serve                              # binds 127.0.0.1:11434 by default
+skelm serve --host 0.0.0.0 --port 8080
+```
+
+| Method & path | Purpose |
+|---------------|---------|
+| `POST /v1/chat/completions` | Chat — supports `stream`, `tools`, `temperature`, `max_tokens`, `seed`, `stop` |
+| `POST /v1/completions` | Legacy text completion (no chat template) |
+| `POST /v1/embeddings` | Embeddings (for embedding models) |
+| `GET /v1/models`, `GET /v1/models/{id}` | List / retrieve installed models |
+| `GET /health` | Liveness probe |
+
+```sh
+curl http://127.0.0.1:11434/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model": "qwen2.5:7b", "messages": [{"role": "user", "content": "Say hello"}]}'
+```
+
+…or with the OpenAI Python SDK:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:11434/v1", api_key="not-needed")
+resp = client.chat.completions.create(
+    model="qwen2.5:7b",
+    messages=[{"role": "user", "content": "Say hello"}],
+)
+print(resp.choices[0].message.content)
+```
+
+Notes:
+
+- Generation is **serialized** — requests are handled one at a time (llama.cpp already
+  saturates the available cores).
+- Tool calls are returned in the response `tool_calls`; for reliable tool-call recovery
+  prefer non-streaming requests (streaming emits raw token text as it is produced).
+- Unsupported OpenAI knobs (`top_p`, `n`, …) are accepted and ignored rather than rejected.
+- The `skelm-api` crate is also a library: `skelm_api::serve`/`router` and the
+  request/response types under `skelm_api::protocol` let you embed the API in another service.
+
+[axum]: https://github.com/tokio-rs/axum
 
 ## Tool calling
 

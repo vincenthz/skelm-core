@@ -13,6 +13,7 @@ name = "skelm"
 path = "src/main.rs"
 
 [dependencies]
+skelm-api.workspace = true
 skelm-download.workspace = true
 skelm-exec.workspace = true
 skelm-llama-cpp.workspace = true
