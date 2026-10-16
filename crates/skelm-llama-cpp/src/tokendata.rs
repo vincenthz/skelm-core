@@ -58,6 +58,10 @@ pub struct TokenDataArray {
 }
 
 impl TokenDataArray {
+    /// Call `f` with this array as a C `llama_token_data_array`, then copy
+    /// the C side changes back: the selected token, the sorted flag, and the
+    /// size (filtering samplers like min-p or top-k compact the candidates
+    /// they keep at the start of the buffer and shrink the size)
     pub fn as_mut_ptr<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce(*mut llama::llama_token_data_array) -> R,
@@ -70,6 +74,14 @@ impl TokenDataArray {
         };
 
         let r = f(&mut c_struct);
+
+        // the samplers only ever filter in place, in the buffer given
+        assert!(
+            std::ptr::eq(c_struct.data, self.data.as_ptr() as *const _)
+                && c_struct.size <= self.data.len(),
+            "sampler replaced or grew the token data array"
+        );
+        self.data.truncate(c_struct.size);
 
         if c_struct.selected == -1 {
             self.selected = None

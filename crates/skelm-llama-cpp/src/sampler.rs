@@ -224,3 +224,48 @@ impl Sampler for SamplerGreedy {
         array.selected = Some(sel)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidates(logits: &[f32]) -> TokenDataArray {
+        TokenDataArray {
+            data: logits
+                .iter()
+                .enumerate()
+                .map(|(i, &logit)| TokenData::new(Token(i as i32), logit, 0.0))
+                .collect(),
+            selected: None,
+            sorted: false,
+        }
+    }
+
+    #[test]
+    fn min_p_drops_candidates() {
+        // relative to the best token: e^-1, e^-10 and e^-20, so a min-p of
+        // 0.05 keeps the first two only
+        let mut array = candidates(&[10.0, 9.0, 0.0, -10.0]);
+        SamplerMinP::new(0.05, 1).apply(&mut array);
+        let mut kept: Vec<i32> = array.data.iter().map(|d| d.id().0).collect();
+        kept.sort();
+        assert_eq!(kept, [0, 1]);
+    }
+
+    #[test]
+    fn dropped_candidates_are_never_sampled() {
+        // without the filtering, the 1000 near-equal tokens would be picked
+        // most of the time
+        let mut logits = vec![20.0, 19.0];
+        logits.extend(std::iter::repeat_n(14.0, 1000));
+        for seed in 0..50 {
+            let mut chain = SamplerChain::new();
+            chain.add(Box::new(SamplerMinP::new(0.05, 1)));
+            chain.add(Box::new(SamplerDistance::new(seed)));
+            let mut array = candidates(&logits);
+            chain.apply(&mut array);
+            let selected = array.data[array.selected.unwrap()].id().0;
+            assert!(selected < 2, "seed {seed} sampled dropped token {selected}");
+        }
+    }
+}
