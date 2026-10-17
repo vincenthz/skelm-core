@@ -1,3 +1,4 @@
+pub mod engine;
 mod generate;
 pub mod orchestrator;
 mod output;
@@ -15,10 +16,11 @@ use thiserror::Error;
 use skelm_llama_cpp::{self as llama, Vocab};
 use skelm_ollama as ollama;
 
+pub use engine::{Engine, EngineConfig, Flow, Job, JobEnd, JobEvent, JobSink, SamplerFactory};
 pub use generate::default_sampler;
 pub use llama::{
-    CacheType, ContextParams, DraftParams, Drafter, FlashAttn, LoadMode, LoraAdapter, LoraError,
-    ModelParams, SpeculativeConfig, SpeculativeError, SpeculativeStats, SplitMode,
+    CacheType, ContextParams, DecodeError, DraftParams, Drafter, FlashAttn, LoadMode, LoraAdapter,
+    LoraError, ModelParams, SpeculativeConfig, SpeculativeError, SpeculativeStats, SplitMode,
 };
 pub use orchestrator::{
     AgentId, GenBackend, HostEvent, Limits, LlamaGenBackend, Orchestrator, PendingId, ToolKind,
@@ -98,6 +100,8 @@ pub enum ContextError {
     Speculative(#[from] llama::SpeculativeError),
     #[error("failed to apply the LoRA adapters: {0}")]
     Lora(#[from] llama::LoraError),
+    #[error("decoding failed: {0}")]
+    Decode(#[from] llama::DecodeError),
 }
 
 #[derive(Clone)]

@@ -131,6 +131,10 @@ pub struct ContextParams {
     pub op_offload: bool,
     /// device cache in bytes for the MoE experts kept in host memory, 0 = disabled
     pub moe_cache_size: usize,
+    /// with several sequences, share one KV buffer between them (each
+    /// sequence can then use the whole `n_ctx`), instead of splitting it into
+    /// `n_seq_max` equal parts
+    pub kv_unified: bool,
 }
 
 impl Default for ContextParams {
@@ -150,6 +154,7 @@ impl Default for ContextParams {
             offload_kqv: context.offload_kqv,
             op_offload: context.op_offload,
             moe_cache_size: context.moe_cache_size,
+            kv_unified: context.kv_unified,
         }
     }
 }
@@ -170,6 +175,7 @@ impl ContextParams {
         context.offload_kqv = self.offload_kqv;
         context.op_offload = self.op_offload;
         context.moe_cache_size = self.moe_cache_size;
+        context.kv_unified = self.kv_unified;
         context
     }
 }
@@ -345,12 +351,7 @@ impl Context {
     /// sequence from the memory. Returns false if a partial removal is not
     /// supported by the memory (e.g. a recurrent model).
     pub fn memory_seq_rm(&self, p0: usize, p1: Option<usize>) -> bool {
-        let p0 = i32::try_from(p0).expect("valid position");
-        let p1 = p1.map_or(-1, |p| i32::try_from(p).expect("valid position"));
-        unsafe {
-            let memory = llama::llama_get_memory(self.ptr.0);
-            llama::llama_memory_seq_rm(memory, 0, p0, p1)
-        }
+        self.seq_rm(0, p0, p1)
     }
 
     /// Number of tokens in the context (the next position)
@@ -365,24 +366,12 @@ impl Context {
 
     /// Save the partial state (recurrent / SWA caches) of the sequence
     pub(crate) fn state_seq_get_partial(&self) -> Vec<u8> {
-        let flags = llama::LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY;
-        unsafe {
-            let size = llama::llama_state_seq_get_size_ext(self.ptr.0, 0, flags);
-            let mut data = vec![0; size];
-            let written =
-                llama::llama_state_seq_get_data_ext(self.ptr.0, data.as_mut_ptr(), size, 0, flags);
-            data.truncate(written);
-            data
-        }
+        self.seq_state_get_partial(0)
     }
 
     /// Restore a partial state saved with [`Context::state_seq_get_partial`]
     pub(crate) fn state_seq_set_partial(&self, data: &[u8]) -> bool {
-        let flags = llama::LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY;
-        let read = unsafe {
-            llama::llama_state_seq_set_data_ext(self.ptr.0, data.as_ptr(), data.len(), 0, flags)
-        };
-        read == data.len()
+        self.seq_state_set_partial(0, data)
     }
 
     pub(crate) fn decode(&self, batch: &Batch) -> Result<(), DecodeError> {
@@ -481,6 +470,103 @@ impl Context {
     }
 }
 
+/// Several sequences in one context: a context created with `n_seq_max > 1`
+/// holds up to that many independent token sequences (ids `0..n_seq_max`),
+/// decoded together in batches built by the caller. These methods leave the
+/// single-sequence bookkeeping ([`Context::n_past`]) untouched: the caller
+/// tracks the positions of each sequence.
+impl Context {
+    /// Maximum number of sequences
+    pub fn n_seq_max(&self) -> u32 {
+        unsafe { llama::llama_n_seq_max(self.ptr.0) }
+    }
+
+    /// Decode a batch of tokens of any sequences. The logits of the tokens
+    /// appended with `logits` set are then available by their index in the
+    /// batch, see [`Context::get_logits`] and [`crate::Sampler::sample`].
+    pub fn decode_batch(&mut self, batch: &Batch) -> Result<(), DecodeError> {
+        self.decode(batch)
+    }
+
+    /// Remove the positions `p0..p1` (`p1 = None`: to the end) of sequence
+    /// `seq`. Returns false when the memory cannot remove part of a sequence
+    /// (recurrent models), removing a whole sequence always works.
+    pub fn seq_rm(&self, seq: i32, p0: usize, p1: Option<usize>) -> bool {
+        let p0 = i32::try_from(p0).expect("valid position");
+        let p1 = p1.map_or(-1, |p| i32::try_from(p).expect("valid position"));
+        unsafe {
+            let memory = llama::llama_get_memory(self.ptr.0);
+            llama::llama_memory_seq_rm(memory, seq, p0, p1)
+        }
+    }
+
+    /// Make the positions `p0..p1` (`p1 = None`: to the end) of sequence `src`
+    /// part of sequence `dst` too. With a unified KV cache this shares the
+    /// cells instead of copying them.
+    pub fn seq_cp(&self, src: i32, dst: i32, p0: usize, p1: Option<usize>) {
+        let p0 = i32::try_from(p0).expect("valid position");
+        let p1 = p1.map_or(-1, |p| i32::try_from(p).expect("valid position"));
+        unsafe {
+            let memory = llama::llama_get_memory(self.ptr.0);
+            llama::llama_memory_seq_cp(memory, src, dst, p0, p1)
+        }
+    }
+
+    /// The largest position of sequence `seq`, `None` when it is empty
+    pub fn seq_pos_max(&self, seq: i32) -> Option<usize> {
+        let pos = unsafe {
+            let memory = llama::llama_get_memory(self.ptr.0);
+            llama::llama_memory_seq_pos_max(memory, seq)
+        };
+        usize::try_from(pos).ok()
+    }
+
+    /// Save the partial state (recurrent / SWA caches) of sequence `seq`, to
+    /// restore it with [`Context::seq_state_set_partial`] after more tokens
+    /// were decoded: a recurrent state cannot be rolled back otherwise.
+    pub fn seq_state_get_partial(&self, seq: i32) -> Vec<u8> {
+        let flags = llama::LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY;
+        unsafe {
+            let size = llama::llama_state_seq_get_size_ext(self.ptr.0, seq, flags);
+            let mut data = vec![0; size];
+            let written = llama::llama_state_seq_get_data_ext(
+                self.ptr.0,
+                data.as_mut_ptr(),
+                size,
+                seq,
+                flags,
+            );
+            data.truncate(written);
+            data
+        }
+    }
+
+    /// Restore a partial state saved with [`Context::seq_state_get_partial`]
+    /// into sequence `seq`. The positions after the state's must then be
+    /// removed with [`Context::seq_rm`].
+    pub fn seq_state_set_partial(&self, seq: i32, data: &[u8]) -> bool {
+        let flags = llama::LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY;
+        let read = unsafe {
+            llama::llama_state_seq_set_data_ext(self.ptr.0, data.as_ptr(), data.len(), seq, flags)
+        };
+        read == data.len()
+    }
+
+    /// Whether the memory supports removing the end of a sequence, found by
+    /// decoding two tokens and removing the last one. The whole memory is
+    /// cleared afterwards, call this on a fresh context.
+    pub fn probe_seq_rm(&mut self) -> Result<bool, DecodeError> {
+        let mut batch = Batch::new(2, 0, 1);
+        batch.append(Token(0), 0, &[0], false);
+        batch.append(Token(0), 1, &[0], true);
+        self.decode(&batch)?;
+        let partial = self.seq_rm(0, 1, None);
+        self.memory_clear(true);
+        self.tokens = 0;
+        Ok(partial)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,6 +585,7 @@ mod tests {
         assert_eq!(back.type_v, c.type_v);
         assert_eq!(back.offload_kqv, c.offload_kqv);
         assert_eq!(back.moe_cache_size, c.moe_cache_size);
+        assert_eq!(back.kv_unified, c.kv_unified);
     }
 
     #[test]

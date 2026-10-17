@@ -91,8 +91,10 @@ async fn main() -> anyhow::Result<()> {
         args::Commands::Serve {
             host,
             port,
+            parallel,
+            ctx_size,
             options,
-        } => cmd_serve(host, port, options).await,
+        } => cmd_serve(host, port, parallel, ctx_size, options).await,
         args::Commands::Bench {
             name,
             max_tokens,
@@ -152,7 +154,13 @@ async fn cmd_info(name: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_serve(host: String, port: u16, options: args::ModelOptions) -> anyhow::Result<()> {
+async fn cmd_serve(
+    host: String,
+    port: u16,
+    parallel: u16,
+    ctx_size: Option<u32>,
+    options: args::ModelOptions,
+) -> anyhow::Result<()> {
     use std::net::{IpAddr, SocketAddr};
 
     let ip: IpAddr = host
@@ -164,7 +172,12 @@ async fn cmd_serve(host: String, port: u16, options: args::ModelOptions) -> anyh
     run::llama_init_logging(false);
     tracing_subscriber::fmt::init();
 
-    skelm_api::serve_with(addr, options::serve_options(&options)?).await
+    let options = skelm_api::ServeOptions {
+        parallel: parallel.into(),
+        ctx_size,
+        ..options::serve_options(&options)?
+    };
+    skelm_api::serve_with(addr, options).await
 }
 
 async fn cmd_embed(name: String) -> anyhow::Result<()> {

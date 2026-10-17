@@ -15,8 +15,12 @@
 //! `registry/model:variant`) and are pulled from the shared Ollama store. The
 //! request/response types live in [`protocol`] for building clients.
 //!
-//! Generation is CPU-bound and runs on the blocking pool, serialized by an
-//! internal gate so requests are handled one at a time.
+//! Each model generates its requests together, batched on one context (see
+//! [`skelm_exec::engine`]): up to [`ServeOptions::parallel`] at a time, the
+//! others waiting for a slot. Prompts are cached: a request whose prompt
+//! starts like a previous one (the same conversation with one more turn, a
+//! shared system prompt) only processes the rest. Models with speculative
+//! decoding generate one request at a time instead, without prompt caching.
 
 mod error;
 mod generate;

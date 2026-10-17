@@ -26,7 +26,8 @@ Jinja chat templates shipped inside GGUF models, including **tool calling**.
 - 🛠️ **Tool calling** — expose tools to the template, parse tool calls back out of the
   model's output, and run an automated tool loop end-to-end (see [Tool calling](#tool-calling)).
 - 🌐 **OpenAI-compatible API** — `skelm serve` speaks the OpenAI HTTP API (chat, completions,
-  embeddings, models) so existing clients work unmodified (see [OpenAI-compatible API](#openai-compatible-api)).
+  embeddings, models) so existing clients work unmodified, batching concurrent requests and
+  caching prompts (see [OpenAI-compatible API](#openai-compatible-api)).
 - ⚡ **Speculative decoding & LoRA** — faster generation with a draft model or the model's own MTP
   layers, and LoRA adapters applied at load time (see [Speculative decoding & LoRA](#speculative-decoding--lora)).
 
@@ -36,7 +37,7 @@ Jinja chat templates shipped inside GGUF models, including **tool calling**.
 |-------|---------|
 | `skelm-cli` | The `skelm` command-line tool |
 | `skelm-api` | OpenAI-compatible HTTP API server (axum) |
-| `skelm-exec` | High-level model loading, chat-template rendering and tool-call parsing |
+| `skelm-exec` | High-level model loading, chat-template rendering, tool-call parsing, and the engine batching generations |
 | `skelm-llama-cpp` | Safe bindings over llama.cpp (model, context, vocab, sampler) |
 | `skelm-llama-cpp-sys` | Builds and links llama.cpp (git submodule) |
 | `skelm-ollama` | Ollama-compatible model store and manifests |
@@ -130,6 +131,7 @@ server and use your model names (exactly as `skelm list` shows them).
 ```sh
 skelm serve                              # binds 127.0.0.1:11434 by default
 skelm serve --host 0.0.0.0 --port 8080
+skelm serve --parallel 8 --ctx-size 32768
 ```
 
 | Method & path | Purpose |
@@ -161,8 +163,23 @@ print(resp.choices[0].message.content)
 
 Notes:
 
-- Generation is **serialized** — requests are handled one at a time (llama.cpp already
-  saturates the available cores).
+- Requests are **batched**: each model generates up to `--parallel` requests at a time
+  (default 4) on one context, decoding the next token of every request in the same batch;
+  further requests wait for a slot. Long prompts are processed in chunks alongside the
+  ongoing generations.
+- Prompts are **cached**: a finished request's tokens stay in its slot, and a new request
+  goes to the slot sharing the longest prefix with its prompt, so only the rest is
+  processed — a conversation sent again with one more turn, a retry, or requests sharing a
+  system prompt. The response's `usage.prompt_tokens_details.cached_tokens` says how many
+  prompt tokens were reused. Recurrent / hybrid models (e.g. Qwen3.5) resume from state
+  checkpoints, saved before the last prompt token and where prompts diverge.
+- `--ctx-size` is the context of each model in tokens (default 16384), shared by its
+  parallel requests and their cached prompts: a single request can use all of it, idle
+  cached prompts are evicted (least recently used first) when room is needed.
+- With `--draft-model` / `--mtp`, requests are generated one at a time on a context of
+  their own (speculative decoding is not batched), without prompt caching.
+- Greedy (`temperature: 0`) output is not bit-for-bit identical across batch compositions:
+  llama.cpp's kernels round differently with different batch sizes.
 - Tool calls are returned in the response `tool_calls`; for reliable tool-call recovery
   prefer non-streaming requests (streaming emits raw token text as it is produced).
 - Unsupported OpenAI knobs (`top_p`, `n`, …) are accepted and ignored rather than rejected.

@@ -1,9 +1,10 @@
-//! Bridge from blocking token generation to an axum SSE response.
+//! Bridge from generation events to an axum SSE response.
 //!
-//! Generation is synchronous and CPU-bound, so it runs on `spawn_blocking` and
-//! pushes events through an unbounded channel that backs the SSE stream.
+//! A task forwards the generation's events as SSE events, through an unbounded
+//! channel that backs the SSE stream.
 
 use std::convert::Infallible;
+use std::future::Future;
 
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -28,13 +29,14 @@ impl EventSender {
     }
 }
 
-/// Run `body` on the blocking pool, streaming whatever it sends as an SSE response.
-pub fn sse_stream<F>(body: F) -> Response
+/// Run `body` in a task, streaming whatever it sends as an SSE response.
+pub fn sse_stream<F, Fut>(body: F) -> Response
 where
-    F: FnOnce(EventSender) + Send + 'static,
+    F: FnOnce(EventSender) -> Fut,
+    Fut: Future<Output = ()> + Send + 'static,
 {
     let (tx, rx) = mpsc::unbounded_channel::<Result<Event, Infallible>>();
-    tokio::task::spawn_blocking(move || body(EventSender(tx)));
+    tokio::spawn(body(EventSender(tx)));
     Sse::new(UnboundedReceiverStream::new(rx))
         .keep_alive(KeepAlive::default())
         .into_response()

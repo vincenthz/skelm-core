@@ -1,16 +1,12 @@
 //! `POST /v1/completions` — legacy text completion (no chat template applied).
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use axum::Json;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
-use tokio::sync::OwnedSemaphorePermit;
-
-use skelm_exec::Model;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::error::ApiError;
-use crate::generate::{GenConfig, generate};
+use crate::generate::{GenConfig, GenEvent, collect};
 use crate::protocol::*;
 use crate::sse::sse_stream;
 use crate::state::{AppState, parse_model};
@@ -31,23 +27,11 @@ pub async fn completions(
     };
     let model_name = req.model;
 
+    let events = state.generate(&descr, &model, &prompt, cfg).await?;
     if req.stream {
-        let permit = state.gen_permit().await;
-        return Ok(stream_completion(model, prompt, cfg, model_name, permit));
+        return Ok(stream_completion(events, model_name));
     }
-
-    let permit = state.gen_permit().await;
-    let (out, prompt_tokens) = tokio::task::spawn_blocking(
-        move || -> anyhow::Result<(crate::generate::GenResult, usize)> {
-            let _permit = permit;
-            let prompt_tokens = model.vocab.tokenize(prompt.as_bytes(), true).len();
-            let mut context = model.try_new_context()?;
-            let cancel = AtomicBool::new(false);
-            let out = generate(&mut context, &prompt, &cfg, &cancel, |_| {})?;
-            Ok((out, prompt_tokens))
-        },
-    )
-    .await??;
+    let out = collect(events).await?;
 
     let response = CompletionResponse {
         id: new_id("cmpl"),
@@ -60,77 +44,51 @@ pub async fn completions(
             finish_reason: Some(out.finish_reason.as_str()),
             logprobs: None,
         }],
-        usage: Usage {
-            prompt_tokens,
-            completion_tokens: out.completion_tokens,
-            total_tokens: prompt_tokens + out.completion_tokens,
-        },
+        usage: Usage::new(out.prompt_tokens, out.cached_tokens, out.completion_tokens),
     };
 
     Ok(Json(response).into_response())
 }
 
-fn stream_completion(
-    model: Model,
-    prompt: String,
-    cfg: GenConfig,
-    model_name: String,
-    permit: OwnedSemaphorePermit,
-) -> Response {
+fn stream_completion(mut events: UnboundedReceiver<GenEvent>, model_name: String) -> Response {
     let id = new_id("cmpl");
     let created = unix_now();
 
-    sse_stream(move |tx| {
-        let _permit = permit;
-        let mut context = match model.try_new_context() {
-            Ok(context) => context,
-            Err(e) => {
-                tracing::error!("completion stream context creation failed: {e}");
-                tx.done();
-                return;
-            }
-        };
-        let cancel = AtomicBool::new(false);
-
-        let result = generate(&mut context, &prompt, &cfg, &cancel, |chunk| {
-            let ev = CompletionChunk {
-                id: id.clone(),
-                object: "text_completion",
-                created,
-                model: model_name.clone(),
-                choices: vec![CompletionChoice {
-                    index: 0,
-                    text: chunk.to_string(),
-                    finish_reason: None,
-                    logprobs: None,
-                }],
-            };
-            if !tx.send_json(&ev) {
-                cancel.store(true, Ordering::Relaxed);
-            }
-        });
-
-        let finish = match &result {
-            Ok(out) => out.finish_reason.as_str(),
-            Err(e) => {
-                tracing::error!("completion stream generation failed: {e}");
-                "stop"
-            }
-        };
-
-        let last = CompletionChunk {
-            id,
+    sse_stream(move |tx| async move {
+        let chunk = |text: String, finish_reason: Option<&'static str>| CompletionChunk {
+            id: id.clone(),
             object: "text_completion",
             created,
-            model: model_name,
+            model: model_name.clone(),
             choices: vec![CompletionChoice {
                 index: 0,
-                text: String::new(),
-                finish_reason: Some(finish),
+                text,
+                finish_reason,
                 logprobs: None,
             }],
         };
-        tx.send_json(&last);
+
+        // returning drops `events`, which cancels the generation
+        let finish = loop {
+            match events.recv().await {
+                Some(GenEvent::Text(text)) => {
+                    if !tx.send_json(&chunk(text, None)) {
+                        return;
+                    }
+                }
+                Some(GenEvent::Done(out)) => break out.finish_reason.as_str(),
+                Some(GenEvent::Error(e)) => {
+                    tracing::error!("completion stream generation failed: {e}");
+                    break "stop";
+                }
+                None => {
+                    tracing::error!("completion stream generation aborted");
+                    break "stop";
+                }
+            }
+        };
+
+        tx.send_json(&chunk(String::new(), Some(finish)));
         tx.done();
     })
 }

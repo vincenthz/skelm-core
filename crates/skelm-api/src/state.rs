@@ -1,18 +1,21 @@
-//! Shared server state: a loaded-model cache and a generation gate.
+//! Shared server state: the loaded models, and the engines generating with them.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
+use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use skelm_exec::{
-    ContextOptions, DraftParams, Drafter, Model, ModelDescr, ModelLoadError, ModelParams, Models,
-    SpeculativeConfig,
+    ContextOptions, DraftParams, Drafter, Engine, EngineConfig, Job, JobEnd, JobEvent, JobSink,
+    Model, ModelDescr, ModelLoadError, ModelParams, Models, SpeculativeConfig,
 };
 use skelm_ollama as ollama;
 
 use crate::error::ApiError;
+use crate::generate::{ApiSink, GenConfig, GenEvent, build_sampler, generate_serial};
 
 /// Where the drafts of speculative decoding come from
 #[derive(Clone, Debug)]
@@ -24,12 +27,29 @@ pub enum DraftSource {
 }
 
 /// Settings applied to every model the server loads
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ServeOptions {
     /// LoRA adapters `(path, scale)`, loaded for every model
     pub lora: Vec<(PathBuf, f32)>,
-    /// speculative decoding
+    /// speculative decoding (requests to models using it are generated one
+    /// at a time, without prompt caching)
     pub speculative: Option<(DraftSource, DraftParams)>,
+    /// requests generated at the same time, per model
+    pub parallel: usize,
+    /// context size in tokens of each model, shared by its parallel requests
+    /// (`None`: the default, 16384)
+    pub ctx_size: Option<u32>,
+}
+
+impl Default for ServeOptions {
+    fn default() -> Self {
+        ServeOptions {
+            lora: Vec::new(),
+            speculative: None,
+            parallel: EngineConfig::default().slots,
+            ctx_size: None,
+        }
+    }
 }
 
 /// Application state handed to every route. Cheap to clone (everything inside is
@@ -39,9 +59,12 @@ pub struct AppState {
     /// Cache of loaded models, keyed by descriptor. Loading a GGUF is expensive,
     /// so we keep each resident after first use.
     models: Models<ModelDescr>,
-    /// Serializes token generation. llama.cpp inference already saturates the
-    /// available cores, so running requests one at a time keeps the backend
-    /// simple and avoids sharing a model across contexts concurrently.
+    /// The engine of each model, generating its requests together, created on
+    /// first use
+    engines: Arc<tokio::sync::Mutex<HashMap<ModelDescr, Arc<Engine>>>>,
+    /// Serializes the embeddings, and the generations of models with
+    /// speculative decoding (which the engines don't do): each runs on a
+    /// context of its own
     gen_gate: Arc<Semaphore>,
     options: Arc<ServeOptions>,
     /// the draft model, loaded on first use
@@ -62,6 +85,7 @@ impl AppState {
     pub fn with_options(options: ServeOptions) -> Self {
         AppState {
             models: Models::new(),
+            engines: Arc::default(),
             gen_gate: Arc::new(Semaphore::new(1)),
             options: Arc::new(options),
             draft: Arc::default(),
@@ -86,13 +110,83 @@ impl AppState {
 
     /// Acquire the generation gate. The returned permit is released on drop, so
     /// hold it for the whole generation (move it into the blocking task).
-    pub async fn gen_permit(&self) -> OwnedSemaphorePermit {
+    pub(crate) async fn gen_permit(&self) -> OwnedSemaphorePermit {
         // The semaphore is never closed, so acquisition cannot fail.
         self.gen_gate
             .clone()
             .acquire_owned()
             .await
             .expect("generation semaphore closed")
+    }
+
+    /// The engine of a model, created on first use
+    async fn engine(&self, descr: &ModelDescr, model: &Model) -> Result<Arc<Engine>, ApiError> {
+        let mut engines = self.engines.lock().await;
+        if let Some(engine) = engines.get(descr) {
+            return Ok(engine.clone());
+        }
+        let config = EngineConfig {
+            slots: self.options.parallel,
+            n_ctx: model.options.params.n_ctx,
+        };
+        let model = model.clone();
+        let engine = tokio::task::spawn_blocking(move || Engine::new(&model, &config))
+            .await?
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        tracing::info!(
+            "{descr}: {} parallel requests, {} tokens of context",
+            engine.slots(),
+            engine.n_ctx()
+        );
+        let engine = Arc::new(engine);
+        engines.insert(descr.clone(), engine.clone());
+        Ok(engine)
+    }
+
+    /// Generate a reply to `prompt` with `model`: the returned channel gets
+    /// the text as it is generated, then the result. Dropping it cancels the
+    /// generation.
+    pub async fn generate(
+        &self,
+        descr: &ModelDescr,
+        model: &Model,
+        prompt: &str,
+        cfg: GenConfig,
+    ) -> Result<UnboundedReceiver<GenEvent>, ApiError> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let tokens = model.vocab.tokenize(prompt.as_bytes(), true);
+
+        if model.options.speculative.is_some() {
+            let permit = self.gen_permit().await;
+            let model = model.clone();
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                let n_ctx = model.options.params.n_ctx as usize;
+                let mut sink = ApiSink::new(tx, &cfg, n_ctx);
+                match model.try_new_context() {
+                    Ok(mut context) => generate_serial(&mut context, &tokens, &cfg, &mut sink),
+                    Err(e) => {
+                        sink.event(JobEvent::Finished(JobEnd::Error(e.to_string())));
+                    }
+                }
+            });
+            return Ok(rx);
+        }
+
+        let engine = self.engine(descr, model).await?;
+        let sink = ApiSink::new(tx, &cfg, engine.n_ctx());
+        let job = Job {
+            prompt: tokens,
+            max_tokens: cfg.max_tokens,
+            sampler: Box::new(move || Box::new(build_sampler(&cfg))),
+            sink: Box::new(sink),
+        };
+        if engine.submit(job).is_err() {
+            // its thread panicked: the next request starts a new one
+            self.engines.lock().await.remove(descr);
+            return Err(ApiError::Internal("the generation engine stopped".into()));
+        }
+        Ok(rx)
     }
 }
 
@@ -135,11 +229,15 @@ impl AppState {
             }),
         };
 
+        let mut params = skelm_exec::ContextParams::default();
+        if let Some(n_ctx) = self.options.ctx_size {
+            params.n_ctx = n_ctx;
+        }
         let with_options = |speculative| {
             model.clone().with_context_options(ContextOptions {
+                params: params.clone(),
                 lora: lora.clone(),
                 speculative,
-                ..ContextOptions::default()
             })
         };
         match with_options(speculative) {

@@ -128,6 +128,13 @@ pub enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value_t = 11434)]
         port: u16,
+        /// Requests generated at the same time, per model (batched together)
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=256))]
+        parallel: u16,
+        /// Context size in tokens of each model, shared by its parallel
+        /// requests and their cached prompts [default: 16384]
+        #[arg(long, value_name = "TOKENS")]
+        ctx_size: Option<u32>,
         /// Applied to every model the server loads (models without MTP layers,
         /// or incompatible with the draft model, decode normally)
         #[command(flatten)]

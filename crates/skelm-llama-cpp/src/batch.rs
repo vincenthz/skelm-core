@@ -79,7 +79,7 @@ impl Batch {
         }
     }
 
-    #[allow(dead_code)]
+    /// Remove every token
     pub fn clear(&mut self) {
         if self.batch.n_tokens == 0 {
             return;
@@ -105,15 +105,25 @@ impl Batch {
         batch
     }
 
-    #[allow(dead_code)]
     pub fn capacity(&self) -> usize {
         self.tokens_capacity
+    }
+
+    /// Number of tokens in the batch
+    pub fn len(&self) -> usize {
+        self.batch.n_tokens as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.batch.n_tokens == 0
     }
 
     pub fn is_embedding(&self) -> bool {
         self.batch.embd != null_mut()
     }
 
+    /// Append `token` at `position` of the sequences `sequence_ids`, with its
+    /// logits computed when `logits` is set
     pub fn append(&mut self, token: Token, position: usize, sequence_ids: &[i32], logits: bool) {
         let batch_idx = self.batch.n_tokens as usize;
         if batch_idx == self.tokens_capacity {

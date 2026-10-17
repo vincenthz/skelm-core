@@ -14,6 +14,7 @@ mod token;
 mod tokendata;
 mod vocab;
 
+pub use batch::Batch;
 pub use context::{CacheType, Context, ContextCreateError, ContextParams, DecodeError, FlashAttn};
 pub use log::{LogKey, LogLevel, llama_logging};
 pub use lora::{LoraAdapter, LoraError};

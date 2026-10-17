@@ -113,7 +113,11 @@ pub fn serve_options(options: &ModelOptions) -> anyhow::Result<skelm_api::ServeO
     } else {
         None
     };
-    Ok(skelm_api::ServeOptions { lora, speculative })
+    Ok(skelm_api::ServeOptions {
+        lora,
+        speculative,
+        ..skelm_api::ServeOptions::default()
+    })
 }
 
 #[cfg(test)]

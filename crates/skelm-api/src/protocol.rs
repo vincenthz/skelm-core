@@ -261,6 +261,25 @@ pub struct Usage {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
     pub total_tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+impl Usage {
+    pub fn new(prompt_tokens: usize, cached_tokens: usize, completion_tokens: usize) -> Self {
+        Usage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+            prompt_tokens_details: Some(PromptTokensDetails { cached_tokens }),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct PromptTokensDetails {
+    /// prompt tokens reused from the server's cache, not processed again
+    pub cached_tokens: usize,
 }
 
 // --- streaming chunks ---
